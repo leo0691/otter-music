@@ -44,6 +44,8 @@ import {
 import { registerBlobUrl } from "@/lib/utils/blob-registry";
 import { base64ToBlob } from "@/lib/utils/base64";
 import { logger } from "../logger";
+import { setUpNameCache, getUpNameCache } from "@/lib/bilibili/up-name-cache";
+import { cachedFetch } from "@/lib/utils/cache";
 
 const BILIBILI_API_BASE = "https://api.bilibili.com";
 const BILIBILI_PROXY_PREFIX = "/music-api/bilibili";
@@ -85,15 +87,21 @@ async function resolveBilibiliAudioUrl(
   bvid: string,
   cid: number,
   referer: string
-): Promise<{ url: string; source: "dash" | "durl" } | null> {
+): Promise<{
+  url: string;
+  format: import("@otter-music/shared").AudioFormat;
+  source: "dash" | "durl";
+} | null> {
   // 尝试 DASH 格式 (fnval=16)
   const playUrl = await fetchBilibiliJson<BilibiliPlayUrlResponse>(
     buildBilibiliPlayUrlPath(bvid, cid),
     referer
   );
-  let audioUrl = playUrl ? selectBilibiliAudioUrl(playUrl) : null;
+  const dashResult = playUrl ? selectBilibiliAudioUrl(playUrl) : null;
 
-  if (audioUrl) return { url: audioUrl, source: "dash" };
+  if (dashResult) {
+    return { url: dashResult.url, format: dashResult.format, source: "dash" };
+  }
 
   // 诊断日志
   if (playUrl) {
@@ -110,10 +118,10 @@ async function resolveBilibiliAudioUrl(
     buildBilibiliDurlPlayUrlPath(bvid, cid),
     referer
   );
-  audioUrl = durlResponse ? selectBilibiliDurlUrl(durlResponse) : null;
-  if (audioUrl) {
+  const durlResult = durlResponse ? selectBilibiliDurlUrl(durlResponse) : null;
+  if (durlResult) {
     logger.warn("[bilibili] Using durl fallback for audio");
-    return { url: audioUrl, source: "durl" };
+    return { url: durlResult.url, format: durlResult.format, source: "durl" };
   }
 
   return null;
@@ -216,7 +224,10 @@ export async function searchBilibiliVideos(
 async function getBilibiliSongUrlWeb(
   bvid: string,
   cidOverride?: number
-): Promise<string | null> {
+): Promise<{
+  url: string;
+  format: import("@otter-music/shared").AudioFormat;
+} | null> {
   if (IS_WEB_PROD) {
     const res = await fetchWithTimeout(
       `${getApiUrl()}${BILIBILI_PROXY_PREFIX}/song-url`,
@@ -228,9 +239,15 @@ async function getBilibiliSongUrlWeb(
       NETWORK_TIMEOUT
     );
     if (!res.ok) return null;
-    const data = (await res.json()) as { url?: string | null };
+    const data = (await res.json()) as {
+      url?: string | null;
+      format?: import("@otter-music/shared").AudioFormat;
+    };
     if (!data.url) return null;
-    return buildBilibiliAudioProxyUrl(bvid, data.url);
+    return {
+      url: buildBilibiliAudioProxyUrl(bvid, data.url),
+      format: data.format ?? "m4s",
+    };
   }
 
   try {
@@ -249,7 +266,10 @@ async function getBilibiliSongUrlWeb(
 
     const result = await resolveBilibiliAudioUrl(bvid, cid, referer);
     if (!result) return null;
-    return buildBilibiliAudioProxyUrl(bvid, result.url);
+    return {
+      url: buildBilibiliAudioProxyUrl(bvid, result.url),
+      format: result.format,
+    };
   } catch {
     return null;
   }
@@ -262,7 +282,10 @@ async function getBilibiliSongUrlWeb(
 async function getBilibiliSongUrlNative(
   bvid: string,
   cidOverride?: number
-): Promise<string | null> {
+): Promise<{
+  url: string;
+  format: import("@otter-music/shared").AudioFormat;
+} | null> {
   try {
     const { getNativeBilibiliStreamUrl } =
       await import("./bilibili-native-player");
@@ -283,16 +306,23 @@ async function getBilibiliSongUrlNative(
     const result = await resolveBilibiliAudioUrl(bvid, cid, referer);
     if (!result) return null;
 
-    return getNativeBilibiliStreamUrl(result.url, bvid);
+    const streamUrl = await getNativeBilibiliStreamUrl(result.url, bvid);
+    if (!streamUrl) return null;
+
+    return {
+      url: streamUrl,
+      format: result.format,
+    };
   } catch (e) {
     logger.error("[bilibili] Error getting native song URL:", e);
     return null;
   }
 }
 
-export async function getBilibiliSongUrl(
-  trackId: string
-): Promise<string | null> {
+export async function getBilibiliSongUrl(trackId: string): Promise<{
+  url: string;
+  format: import("@otter-music/shared").AudioFormat;
+} | null> {
   const parsed = parseBilibiliTrackId(trackId);
   if (!parsed) return null;
 
@@ -360,7 +390,7 @@ export async function searchBilibiliCollections(
 export async function getBilibiliCollectionDetail(
   albumId: string,
   page = 1,
-  pageSize = 30
+  pageSize = 100
 ): Promise<{
   meta: BilibiliSeriesMetaRaw | null;
   tracks: MusicTrack[];
@@ -384,7 +414,7 @@ export async function getBilibiliCollectionDetail(
       if (seasonsData) {
         const seasonsResult = parseBilibiliSeasonsArchivesList(seasonsData);
         if (seasonsResult.meta) {
-          const upName = "";
+          const upName = getUpNameCache(mid) || "";
 
           // 更新 meta 中的 creator name
           const metaWithCreator: BilibiliSeriesMetaRaw = {
@@ -397,7 +427,7 @@ export async function getBilibiliCollectionDetail(
           return {
             meta: metaWithCreator,
             tracks: seasonsResult.archives.map((archive) =>
-              convertSeasonArchiveToMusicTrack(archive, upName)
+              convertSeasonArchiveToMusicTrack(archive, upName, albumId)
             ),
             total: seasonsResult.total,
           };
@@ -408,11 +438,21 @@ export async function getBilibiliCollectionDetail(
 
     // 没有 mid 或 seasons_archives_list 失败，尝试 series API
     const [detailData, archivesData] = await Promise.all([
-      fetchBilibiliJson<BilibiliSeriesResponse>(
-        buildBilibiliSeriesDetailPath(seriesId)
+      cachedFetch<BilibiliSeriesResponse>(
+        `bilibili_series_detail_${seriesId}`,
+        () =>
+          fetchBilibiliJson<BilibiliSeriesResponse>(
+            buildBilibiliSeriesDetailPath(seriesId)
+          ),
+        24 * 60 * 60 * 1000
       ),
-      fetchBilibiliJson<BilibiliSeriesArchivesResponse>(
-        buildBilibiliSeriesArchivesPath(seriesId, page, pageSize)
+      cachedFetch<BilibiliSeriesArchivesResponse>(
+        `bilibili_series_archives_${seriesId}_${page}_${pageSize}`,
+        () =>
+          fetchBilibiliJson<BilibiliSeriesArchivesResponse>(
+            buildBilibiliSeriesArchivesPath(seriesId, page, pageSize)
+          ),
+        24 * 60 * 60 * 1000
       ),
     ]);
 
@@ -425,7 +465,9 @@ export async function getBilibiliCollectionDetail(
 
       return {
         meta,
-        tracks: parsed.archives.map(convertSeriesArchiveToMusicTrack),
+        tracks: parsed.archives.map((archive) =>
+          convertSeriesArchiveToMusicTrack(archive, albumId)
+        ),
         total: parsed.total,
       };
     }
@@ -460,9 +502,14 @@ export async function enrichBilibiliSearchResults(
   const viewResults = await Promise.all(
     bvids.map(async (bvid) => {
       try {
-        const view = await fetchBilibiliJson<BilibiliViewResponse>(
-          buildBilibiliViewPath(bvid),
-          referer
+        const view = await cachedFetch<BilibiliViewResponse>(
+          `bilibili_view_${bvid}`,
+          () =>
+            fetchBilibiliJson<BilibiliViewResponse>(
+              buildBilibiliViewPath(bvid),
+              referer
+            ),
+          24 * 60 * 60 * 1000
         );
         return { bvid, view };
       } catch {
@@ -482,6 +529,10 @@ export async function enrichBilibiliSearchResults(
 
     const view = viewMap.get(parsed.bvid);
     if (!view?.data) return t;
+
+    if (view.data.owner?.mid && view.data.owner?.name) {
+      setUpNameCache(view.data.owner.mid, view.data.owner.name);
+    }
 
     const ugcSeason = view.data.ugc_season;
     const pages = view.data.pages || [];
