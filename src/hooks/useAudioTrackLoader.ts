@@ -1,38 +1,48 @@
 import { useEffect, useRef } from "react";
 import { retry } from "@/lib/utils";
 import { musicApi } from "@/lib/music-api";
-import { getProxyUrl } from "@/lib/api";
+import { getProxyUrl, isProxyUrl } from "@/lib/api";
+import { normalizeAudioUrlForPlayback } from "@/lib/utils/audio-url";
 import { useMusicStore } from "@/store/music-store";
 import { useSourceQualityStore } from "@/store/source-quality-store";
 import { useDownloadStore } from "@/store/download-store";
+import { useOfflineStore } from "@/store/offline-store";
+import { useUrlCacheStore, buildUrlCacheKey } from "@/store/url-cache-store";
 import { Capacitor } from "@capacitor/core";
 import { buildDownloadKey } from "@/lib/utils/download";
 import type { MusicSource } from "@/types/music";
 import toast from "react-hot-toast";
 import { handleAutoMatch } from "@/lib/audio-match";
-import { revokeBlobUrl } from "@/lib/utils/blob-registry";
 import { logger } from "@/lib/logger";
 
-const AUDIO_READY_TIMEOUT = 8000;
+const AUDIO_READY_TIMEOUT = 5000;
+const AUDIO_READY_TIMEOUT_SLOW = 15000;
 
-// 模块级 URL 缓存：跨渲染保持已解析的音频 URL，离线时复用
-const _urlMemoryCache = new Map<string, string>();
-const urlMemoryCache = {
-  get: (key: string) => _urlMemoryCache.get(key),
-  set: (key: string, value: string) => {
-    const old = _urlMemoryCache.get(key);
-    if (old && old !== value && old.startsWith("blob:")) {
-      revokeBlobUrl(old);
-    }
-    _urlMemoryCache.set(key, value);
-  },
-  delete: (key: string) => {
-    const old = _urlMemoryCache.get(key);
-    if (old?.startsWith("blob:")) {
-      revokeBlobUrl(old);
-    }
-    _urlMemoryCache.delete(key);
-  },
+/** 根据 Network Information API 返回弱网下的超时时间 */
+function getAudioReadyTimeout(): number {
+  const conn = (navigator as any).connection;
+  if (!conn) return AUDIO_READY_TIMEOUT;
+
+  const { effectiveType } = conn;
+  // 仅在确属 2g 级别弱网时放宽超时；3g/4g/未知均按正常超时
+  // Android WebView 的 Network Information API 不可靠，downlink/rtt 量化指标易误判
+  if (effectiveType === "slow-2g" || effectiveType === "2g") {
+    return AUDIO_READY_TIMEOUT_SLOW;
+  }
+  return AUDIO_READY_TIMEOUT;
+}
+/** 代理 fallback 阶段专用超时，比主链路更短以加速失败放弃 */
+const AUDIO_READY_TIMEOUT_PROXY = 4000;
+
+/**
+ * 持久化 URL 缓存：跨会话保持已解析的音频 URL，离线时复用
+ * 使用 useUrlCacheStore.getState() 在 React 渲染周期外访问
+ */
+const urlCache = {
+  get: (key: string) => useUrlCacheStore.getState().get(key),
+  set: (key: string, value: string) =>
+    useUrlCacheStore.getState().set(key, value),
+  delete: (key: string) => useUrlCacheStore.getState().delete(key),
 };
 
 type FallbackStage = "none" | "proxy" | "final";
@@ -51,7 +61,9 @@ function isTrackPlayable(
       const downloadKey = buildDownloadKey(track.source, track.id);
       return useDownloadStore.getState().hasRecord(downloadKey);
     }
-    // Web 端：SW 缓存可能已缓存该音频，不硬判不可播
+    // Web 端：检查 offlineStore 是否有成功播放时记录的真实 URL
+    const offlineRecord = useOfflineStore.getState().records?.[track.id];
+    return Boolean(offlineRecord);
   }
 
   return true;
@@ -75,7 +87,7 @@ function findNextPlayableTrack(
 
 function waitForAudioReady(
   audio: HTMLAudioElement,
-  timeout = AUDIO_READY_TIMEOUT
+  timeout = getAudioReadyTimeout()
 ): Promise<void> {
   return new Promise((resolve, reject) => {
     let settled = false;
@@ -95,7 +107,16 @@ function waitForAudioReady(
     };
 
     const onReady = () => finish(resolve);
-    const onError = () => finish(() => reject(new Error("AUDIO_NOT_READY")));
+    const onError = () => {
+      const mediaError = audio.error;
+      finish(() =>
+        reject(
+          Object.assign(new Error("AUDIO_NOT_READY"), {
+            mediaErrorCode: mediaError?.code ?? null,
+          })
+        )
+      );
+    };
     const timer = setTimeout(
       () => finish(() => reject(new Error("AUDIO_READY_TIMEOUT"))),
       timeout
@@ -163,6 +184,7 @@ export function useAudioTrackLoader(
   const quality = useMusicStore((s) => s.quality);
   const currentAudioTime = useMusicStore((s) => s.currentAudioTime);
   const hasUserGesture = useMusicStore((s) => s.hasUserGesture);
+  const enableProxyFallback = useMusicStore((s) => s.enableProxyFallback);
   const setIsPlaying = useMusicStore((s) => s.setIsPlaying);
   const setIsLoading = useMusicStore((s) => s.setIsLoading);
   const skipToNext = useMusicStore((s) => s.skipToNext);
@@ -174,7 +196,11 @@ export function useAudioTrackLoader(
   const requestIdRef = useRef(0);
   const prevUrlRecoveryKeyRef = useRef(urlRecoveryKey);
 
-  const prevTrackRef = useRef<{ id?: string; source?: string } | null>(null);
+  const prevTrackRef = useRef<{
+    id?: string;
+    source?: string;
+    quality?: string;
+  } | null>(null);
   const remoteUrlRef = useRef<string | null>(null);
   const fallbackStageRef = useRef<{
     trackKey: string | null;
@@ -199,7 +225,12 @@ export function useAudioTrackLoader(
 
     const load = async () => {
       const audio = audioRef.current!;
-      const trackKey = `${currentTrackSource}:${currentTrackId}:${currentTrackUrlId ?? ""}`;
+      const trackKey = buildUrlCacheKey(
+        currentTrackSource,
+        currentTrackId,
+        currentTrackUrlId,
+        quality
+      );
       if (fallbackStageRef.current.trackKey !== trackKey) {
         fallbackStageRef.current = { trackKey, stage: "none" };
         remoteUrlRef.current = null;
@@ -207,12 +238,28 @@ export function useAudioTrackLoader(
 
       const getRemoteUrl = async () => {
         if (remoteUrlRef.current) return remoteUrlRef.current;
-        // 离线时优先用缓存 URL，避免 API 调用失败
-        const cached = urlMemoryCache.get(trackKey);
-        if (!navigator.onLine && cached) {
-          remoteUrlRef.current = cached;
-          return cached;
+
+        // 无论在线离线，优先使用已缓存的 URL，避免重复调 API 覆盖 SW 缓存
+        const memCached = urlCache.get(trackKey);
+        if (memCached) {
+          const finalUrl = normalizeAudioUrlForPlayback(memCached);
+          remoteUrlRef.current = finalUrl;
+          return finalUrl;
         }
+
+        const offlineRecord = currentTrackId
+          ? useOfflineStore.getState().records?.[currentTrackId]
+          : null;
+        if (offlineRecord?.url) {
+          const finalUrl = normalizeAudioUrlForPlayback(offlineRecord.url);
+          remoteUrlRef.current = finalUrl;
+          return finalUrl;
+        }
+
+        // 离线且无任何缓存时，返回空 URL（外部 catch 处理跳过逻辑）
+        if (!navigator.onLine) return "";
+
+        // 在线且无缓存时，调用 API 获取播放 URL
         const urlId =
           (currentTrackSource as string) === "local" ||
           currentTrackSource === "podcast"
@@ -223,20 +270,25 @@ export function useAudioTrackLoader(
           source: currentTrackSource,
           quality: parseInt(quality, 10),
         });
-        urlMemoryCache.set(trackKey, remoteUrl);
+        urlCache.set(trackKey, remoteUrl);
         remoteUrlRef.current = remoteUrl;
         return remoteUrl;
       };
 
-      const setSourceAndPlay = async (audioUrl: string) => {
+      const setSourceAndPlay = async (
+        audioUrl: string,
+        startTime?: number,
+        timeout?: number
+      ) => {
         if (audio.src !== audioUrl) {
           setCurrentAudioUrl(audioUrl);
           audio.src = "";
           audio.src = audioUrl;
           audio.load();
         }
-        await waitForAudioReady(audio);
-        audio.currentTime = currentAudioTime;
+        await waitForAudioReady(audio, timeout);
+        audio.currentTime = startTime ?? currentAudioTime;
+        audio.playbackRate = useMusicStore.getState().playbackSpeed;
         await audio.play();
       };
 
@@ -244,10 +296,21 @@ export function useAudioTrackLoader(
         setIsLoading(true);
 
         const isRecovery = prevUrlRecoveryKeyRef.current !== urlRecoveryKey;
+        const qualityChanged =
+          prevTrackRef.current?.quality !== quality &&
+          prevTrackRef.current?.id === currentTrackId &&
+          prevTrackRef.current?.source === currentTrackSource;
+
+        // 不支持音质调整的音源：quality 变化时无需重载
+        const qualityAgnosticSources = ["local", "bilibili", "podcast"];
+        const shouldSkipQualityReload =
+          qualityChanged && qualityAgnosticSources.includes(currentTrackSource);
 
         if (
           prevTrackRef.current?.id === currentTrackId &&
           prevTrackRef.current?.source === currentTrackSource &&
+          (prevTrackRef.current?.quality === quality ||
+            shouldSkipQualityReload) &&
           !isSwitchingTrackRef.current &&
           !isRecovery
         ) {
@@ -260,10 +323,24 @@ export function useAudioTrackLoader(
           prevUrlRecoveryKeyRef.current = urlRecoveryKey;
         }
 
+        // 音质变更时清除 URL 缓存，确保用新音质重新请求
+        if (qualityChanged && !shouldSkipQualityReload) {
+          remoteUrlRef.current = null;
+          fallbackStageRef.current = { trackKey: "", stage: "none" };
+        }
+
         isSwitchingTrackRef.current = true;
         hasRecordedRef.current = false;
 
-        audio.pause();
+        // 音质变更时不暂停，尽量无缝切换
+        if (!qualityChanged) {
+          audio.pause();
+        }
+
+        // 音质变更时记录当前实际播放位置，用于恢复
+        const resumeTime = qualityChanged
+          ? audio.currentTime
+          : currentAudioTime;
 
         const isLocal = (currentTrackSource as string) === "local";
         const isOnline = navigator.onLine;
@@ -275,33 +352,26 @@ export function useAudioTrackLoader(
         const hasDownload = Boolean(localDownloadUrl);
 
         if (!isLocal && !hasDownload && !isOnline) {
-          // 先尝试走缓存链路（urlMemoryCache → cachedFetch → SW），全部失败再判定不可播
+          // 先尝试走缓存链路（urlCache → cachedFetch → SW），全部失败再判定不可播
           try {
             const remoteUrl = await getRemoteUrl();
             if (remoteUrl) {
-              await setSourceAndPlay(remoteUrl);
+              await setSourceAndPlay(remoteUrl, resumeTime);
               return;
             }
           } catch {
             // 缓存未命中，继续下面的跳过逻辑
           }
 
-          if (Capacitor.isNativePlatform()) {
-            const { queue, currentIndex } = useMusicStore.getState();
-            const nextPlayableIndex = findNextPlayableTrack(
-              queue,
-              currentIndex
-            );
+          const { queue, currentIndex } = useMusicStore.getState();
+          const nextPlayableIndex = findNextPlayableTrack(queue, currentIndex);
 
-            if (
-              nextPlayableIndex !== null &&
-              nextPlayableIndex !== currentIndex
-            ) {
-              useMusicStore
-                .getState()
-                .setCurrentIndexAndPlay(nextPlayableIndex);
-              return;
-            }
+          if (
+            nextPlayableIndex !== null &&
+            nextPlayableIndex !== currentIndex
+          ) {
+            useMusicStore.getState().setCurrentIndexAndPlay(nextPlayableIndex);
+            return;
           }
 
           logger.error(
@@ -318,9 +388,18 @@ export function useAudioTrackLoader(
 
         try {
           const primaryUrl = localDownloadUrl || (await getRemoteUrl());
-          await setSourceAndPlay(primaryUrl);
+
+          await setSourceAndPlay(primaryUrl, resumeTime);
         } catch (primaryError) {
           console.error("Primary audio load failed:", primaryError);
+
+          // NotAllowedError（autoplay 被拦截）不触发代理
+          if (
+            primaryError instanceof DOMException &&
+            primaryError.name === "NotAllowedError"
+          ) {
+            throw primaryError;
+          }
 
           if (
             downloadKey &&
@@ -329,28 +408,36 @@ export function useAudioTrackLoader(
           ) {
             try {
               audio.src = "";
-              await setSourceAndPlay(localDownloadUrl);
+              await setSourceAndPlay(localDownloadUrl, resumeTime);
               return;
             } catch {
               useDownloadStore.getState().removeRecord(downloadKey);
               toast.error("播放失败，已切换在线播放");
               const remoteUrl = await getRemoteUrl();
-              await setSourceAndPlay(remoteUrl);
+              await setSourceAndPlay(remoteUrl, resumeTime);
               return;
             }
           }
 
           if (
+            enableProxyFallback &&
             currentTrackSource !== "local" &&
             fallbackStageRef.current.stage === "none" &&
             remoteUrlRef.current &&
             isOnline
           ) {
             const remoteUrl = remoteUrlRef.current;
-            const proxyUrl = getProxyUrl(remoteUrl);
+            // 源头已转代理时避免重复包装
+            const proxyUrl = isProxyUrl(remoteUrl)
+              ? remoteUrl
+              : getProxyUrl(remoteUrl);
             fallbackStageRef.current.stage = "proxy";
             toast("已切换备用线路", { icon: "🌐", id: "proxy-notice" });
-            await setSourceAndPlay(proxyUrl);
+            await setSourceAndPlay(
+              proxyUrl,
+              resumeTime,
+              AUDIO_READY_TIMEOUT_PROXY
+            );
             return;
           }
 
@@ -386,6 +473,20 @@ export function useAudioTrackLoader(
           useSourceQualityStore.getState().recordFail(currentTrackSource);
         }
 
+        // 离线场景下清理已失效的缓存元数据
+        // SW audio-stream-cache 条目可能被 ExpirationPlugin 淘汰（maxEntries/maxAge）
+        // 但 offlineStore 和 urlCacheStore 中仍保留元数据，导致离线歌单反复尝试失效曲目
+        if (!navigator.onLine && currentTrackId && currentTrackSource) {
+          useOfflineStore.getState().removeRecord(currentTrackId);
+          const staleKey = buildUrlCacheKey(
+            currentTrackSource,
+            currentTrackId,
+            currentTrackUrlId,
+            quality
+          );
+          urlCache.delete(staleKey);
+        }
+
         fallbackStageRef.current.stage = "final";
         audio.src = "";
         setCurrentAudioUrl(null);
@@ -417,6 +518,7 @@ export function useAudioTrackLoader(
     prevTrackRef.current = {
       id: currentTrackId,
       source: currentTrackSource,
+      quality,
     };
 
     return () => {
@@ -432,5 +534,5 @@ export function useAudioTrackLoader(
     quality,
     hasUserGesture,
     urlRecoveryKey,
-  ]); // eslint-disable-line react-hooks/exhaustive-deps
+  ]);
 }

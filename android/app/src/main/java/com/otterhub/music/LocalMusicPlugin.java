@@ -2,12 +2,20 @@ package com.otterhub.music;
 
 import android.Manifest;
 import android.app.Activity;
+import android.app.RecoverableSecurityException;
 import android.content.ContentResolver;
 import android.content.ContentUris;
+import android.content.Context;
 import android.content.Intent;
+import android.content.IntentSender;
+import android.content.SharedPreferences;
 import android.content.res.Configuration;
 import android.database.Cursor;
 import android.media.MediaMetadataRetriever;
+import android.media.MediaExtractor;
+import android.media.MediaMuxer;
+import android.media.MediaFormat;
+import android.media.MediaCodec;
 import android.net.Uri;
 import android.os.Build;
 import android.os.Environment;
@@ -37,9 +45,13 @@ import java.io.IOException;
 import java.io.InputStream;
 import java.nio.charset.Charset;
 import java.nio.charset.StandardCharsets;
-import java.util.Arrays;
+import java.nio.ByteBuffer;
 import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.Collections;
+import java.util.HashSet;
 import java.util.List;
+import java.util.Set;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 
@@ -51,13 +63,47 @@ import java.util.concurrent.Executors;
 public class LocalMusicPlugin extends Plugin {
 
     private static final String PERMISSION_ALIAS = Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU ? "audio" : "storage";
-    private static final String[] AUDIO_EXTENSIONS = {".mp3", ".flac", ".wav", ".m4a", ".aac", ".ogg", ".wma", ".ape", ".opus", ".m4b"};
+    private static final String[] AUDIO_EXTENSIONS = {".mp3", ".flac", ".wav", ".m4a", ".aac", ".ogg", ".wma", ".ape", ".opus", ".m4b", ".m4s"};
     private static final int MAX_DEPTH = 20;
     private static final int MAX_FILES = 10000;
 
-    private final ExecutorService executor = Executors.newFixedThreadPool(1);
+    private final ExecutorService scanExecutor = Executors.newSingleThreadExecutor();
+    private final ExecutorService ioExecutor = Executors.newFixedThreadPool(Runtime.getRuntime().availableProcessors());
     private final Handler mainHandler = new Handler(Looper.getMainLooper());
     private volatile boolean isScanning = false;
+    private PluginCall pendingDeleteCall;
+    private String pendingDeletePath;
+    private static final int DELETE_PERMISSION_REQUEST = 0x7A33;
+    private static final String EXCLUDED_PREFS = "LocalMusicExcluded";
+    private static final String EXCLUDED_FOLDERS_KEY = "excluded_folders";
+    private static final String SEPARATOR = "\u001F";
+    private static final String[] DEFAULT_EXCLUDED_PATH_PATTERNS = {
+        // English
+        "/recordings/call",
+        "/callrecord",
+        "/call_record",
+        "/callrecording",
+        "/call_recording",
+        "/call_recorder",
+        "/sounds/callrecord",
+        "/record/call",
+
+        // Chinese
+        "/通话录音",
+        "/电话录音",
+        "/录音/通话",
+        "/录音/电话",
+    };
+    private Set<String> excludedFolderSet = null;
+
+    private static final String SCHEME_CONTENT = "content://";
+    private static final String[] PROJECTION_MUSIC = {
+            MediaStore.Audio.Media._ID, MediaStore.Audio.Media.TITLE, MediaStore.Audio.Media.ARTIST,
+            MediaStore.Audio.Media.ALBUM, MediaStore.Audio.Media.DURATION, MediaStore.Audio.Media.SIZE,
+            MediaStore.Audio.Media.DATE_MODIFIED
+    };
+
+    private String cachedStorageRoot;
 
     // --- 核心扫描方法 ---
 
@@ -154,12 +200,27 @@ public class LocalMusicPlugin extends Plugin {
         call.resolve(new JSObject().put("isDarkMode", isDarkMode));
     }
 
+    public void notifyDarkModeChange(boolean isDarkMode) {
+        notifyListeners("darkModeChange", new JSObject().put("isDarkMode", isDarkMode));
+    }
+
     // --- 内部扫描逻辑 ---
 
     private void scanMusicFiles(PluginCall call) {
-        executor.execute(() -> {
-            JSObject result = performMediaStoreScan();
-            mainHandler.post(() -> call.resolve(result));
+        if (isScanning) {
+            resolveError(call, "扫描正在进行中");
+            return;
+        }
+        isScanning = true;
+        scanExecutor.execute(() -> {
+            try {
+                JSObject result = performMediaStoreScan();
+                mainHandler.post(() -> call.resolve(result));
+            } catch (Exception e) {
+                mainHandler.post(() -> resolveError(call, "Scan failed: " + e.getMessage()));
+            } finally {
+                isScanning = false;
+            }
         });
     }
 
@@ -167,13 +228,8 @@ public class LocalMusicPlugin extends Plugin {
         JSArray filesArray = new JSArray();
         ContentResolver resolver = getContext().getContentResolver();
         Uri musicUri = MediaStore.Audio.Media.EXTERNAL_CONTENT_URI;
-        String[] projection = {
-                MediaStore.Audio.Media._ID, MediaStore.Audio.Media.TITLE, MediaStore.Audio.Media.ARTIST,
-                MediaStore.Audio.Media.ALBUM, MediaStore.Audio.Media.DURATION, MediaStore.Audio.Media.SIZE,
-                MediaStore.Audio.Media.DATE_MODIFIED
-        };
 
-        try (Cursor cursor = resolver.query(musicUri, projection, buildMediaStoreMusicSelection(), null, MediaStore.Audio.Media.DATE_MODIFIED + " DESC")) {
+        try (Cursor cursor = resolver.query(musicUri, PROJECTION_MUSIC, buildMediaStoreMusicSelection(), null, MediaStore.Audio.Media.DATE_MODIFIED + " DESC")) {
             if (cursor != null && cursor.moveToFirst()) {
                 int idCol = cursor.getColumnIndexOrThrow(MediaStore.Audio.Media._ID);
                 int titleCol = cursor.getColumnIndexOrThrow(MediaStore.Audio.Media.TITLE);
@@ -217,21 +273,29 @@ public class LocalMusicPlugin extends Plugin {
 
     private void executeAllStorageScan(PluginCall call) {
         isScanning = true;
-        executor.execute(() -> {
-            List<JSObject> filesList = new ArrayList<>();
-            File extStorage = Environment.getExternalStorageDirectory();
-            if (extStorage != null && extStorage.canRead()) scanDirectory(extStorage, filesList, 0);
+        scanExecutor.execute(() -> {
+            try {
+                excludedFolderSet = loadExcludedFolders();
+                List<JSObject> filesList = new ArrayList<>();
+                File extStorage = Environment.getExternalStorageDirectory();
+                if (extStorage != null && extStorage.canRead()) scanDirectory(extStorage, filesList, 0);
 
-            JSArray filesArray = new JSArray();
-            for (JSObject file : filesList) filesArray.put(file);
+                JSArray filesArray = new JSArray();
+                for (JSObject file : filesList) filesArray.put(file);
 
-            isScanning = false;
-            mainHandler.post(() -> resolveSuccess(call, "files", filesArray));
+                mainHandler.post(() -> resolveSuccess(call, "files", filesArray));
+            } catch (Exception e) {
+                mainHandler.post(() -> resolveError(call, "Scan failed: " + e.getMessage()));
+            } finally {
+                excludedFolderSet = null;
+                isScanning = false;
+            }
         });
     }
 
     private void scanDirectory(File directory, List<JSObject> filesList, int depth) {
         if (depth > MAX_DEPTH || directory == null || !directory.canRead() || filesList.size() >= MAX_FILES) return;
+        if (directory.getName().startsWith(".") || isSystemDirectory(directory)) return;
 
         File[] children = directory.listFiles();
         if (children == null) {
@@ -241,7 +305,7 @@ public class LocalMusicPlugin extends Plugin {
 
         for (File file : children) {
             if (filesList.size() >= MAX_FILES) return;
-            if (file.isDirectory() && !file.getName().startsWith(".") && !isSystemDirectory(file)) {
+            if (file.isDirectory()) {
                 scanDirectory(file, filesList, depth + 1);
             } else if (isAudioFile(file.getName())) {
                 JSObject audioFile = extractAudioMetadata(file);
@@ -261,10 +325,8 @@ public class LocalMusicPlugin extends Plugin {
                 .put("modifiedTime", file.lastModified())
                 .put("name", parsed[0])
                 .put("artist", parsed[1])
-                .put("album", null) //  专辑信息暂时忽略
+                .put("album", (String) null)
                 .put("duration", 0);
-
-        if (isValid(parsed[0]) && isValid(parsed[1])) return audioFile; // 歌手和标题都完整，直接返回跳过 MetadataRetriever
 
         try (MediaMetadataRetriever retriever = new MediaMetadataRetriever()) {
             setRetrieverDataSource(retriever, file.getAbsolutePath());
@@ -280,11 +342,11 @@ public class LocalMusicPlugin extends Plugin {
             }
             if (isValid(mDuration)) {
                 long duration = Long.parseLong(mDuration);
-                if (duration < 60000) return null; // 过滤小于1分钟的音频
+                if (duration < 60000) return null;
                 audioFile.put("duration", duration);
             }
         } catch (Exception ignored) {}
-        
+
         return audioFile;
     }
 
@@ -297,7 +359,7 @@ public class LocalMusicPlugin extends Plugin {
             resolveError(call, "localPath is required");
             return;
         }
-        if (localPath.startsWith("content://")) {
+        if (localPath.startsWith(SCHEME_CONTENT)) {
             resolveSuccess(call, "url", localPath);
             return;
         }
@@ -315,7 +377,7 @@ public class LocalMusicPlugin extends Plugin {
             return;
         }
 
-        executor.execute(() -> {
+        ioExecutor.execute(() -> {
             try (MediaMetadataRetriever retriever = new MediaMetadataRetriever()) {
                 setRetrieverDataSource(retriever, localPath);
                 byte[] picture = retriever.getEmbeddedPicture();
@@ -345,17 +407,20 @@ public class LocalMusicPlugin extends Plugin {
             return;
         }
 
-        executor.execute(() -> {
+        ioExecutor.execute(() -> {
             try {
-                String lyric = extractUsltLyrics(localPath);
-                if (!isValid(lyric)) {
+                String[] parts = extractUsltLyrics(localPath);
+                if (parts == null || !isValid(parts[0])) {
                     mainHandler.post(() -> resolveError(call, "No embedded lyrics"));
                     return;
                 }
 
                 JSObject result = new JSObject()
                         .put("success", true)
-                        .put("lyric", lyric);
+                        .put("lyric", parts[0]);
+                if (parts.length > 1 && parts[1] != null) {
+                    result.put("tlyric", parts[1]);
+                }
                 mainHandler.post(() -> call.resolve(result));
             } catch (Exception e) {
                 mainHandler.post(() -> resolveError(call, "Failed: " + e.getMessage()));
@@ -372,37 +437,203 @@ public class LocalMusicPlugin extends Plugin {
         }
 
         try {
-            boolean deleted = false;
-            ContentResolver resolver = getContext().getContentResolver();
-
-            if (localPath.startsWith("content://")) {
-                deleted = tryDelete(() -> resolver.delete(Uri.parse(localPath), null, null) > 0);
-            }
-            if (!deleted) {
-                deleted = tryDelete(() -> resolver.delete(MediaStore.Audio.Media.EXTERNAL_CONTENT_URI, MediaStore.Audio.Media.DATA + "=?", new String[]{localPath}) > 0);
-            }
-            if (!deleted) {
-                File file = new File(localPath);
-                deleted = !file.exists() || file.delete();
-            }
-
-            if (deleted) resolveSuccess(call, null, null);
+            if (performDeleteFile(localPath)) resolveSuccess(call, null, null);
             else resolveError(call, "Failed to delete file");
+        } catch (SecurityException e) {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                handleRecoverableDelete(call, localPath, e);
+            } else {
+                resolveError(call, "Error: " + e.getMessage());
+            }
         } catch (Exception e) {
             resolveError(call, "Error: " + e.getMessage());
         }
     }
 
+    private void handleRecoverableDelete(PluginCall call, String localPath, SecurityException e) {
+        if (!(e instanceof RecoverableSecurityException)) {
+            resolveError(call, "Delete failed: " + e.getMessage());
+            return;
+        }
+        try {
+            RecoverableSecurityException rse = (RecoverableSecurityException) e;
+            pendingDeleteCall = call;
+            pendingDeletePath = localPath;
+            IntentSender sender = rse.getUserAction().getActionIntent().getIntentSender();
+            getActivity().startIntentSenderForResult(sender, DELETE_PERMISSION_REQUEST, null, 0, 0, 0);
+        } catch (IntentSender.SendIntentException ex) {
+            pendingDeleteCall = null;
+            pendingDeletePath = null;
+            resolveError(call, "Failed to request delete: " + ex.getMessage());
+        }
+    }
+
+    @Override
+    protected void handleOnActivityResult(int requestCode, int resultCode, android.content.Intent data) {
+        super.handleOnActivityResult(requestCode, resultCode, data);
+        if (requestCode != DELETE_PERMISSION_REQUEST || pendingDeleteCall == null) return;
+
+        if (resultCode == Activity.RESULT_OK) {
+            retryDelete(pendingDeleteCall, pendingDeletePath);
+        } else {
+            resolveError(pendingDeleteCall, "Delete cancelled by user");
+        }
+        pendingDeleteCall = null;
+        pendingDeletePath = null;
+    }
+
+    @Override
+    protected void handleOnDestroy() {
+        if (scanExecutor != null && !scanExecutor.isShutdown()) scanExecutor.shutdownNow();
+        if (ioExecutor != null && !ioExecutor.isShutdown()) ioExecutor.shutdownNow();
+        super.handleOnDestroy();
+    }
+
+    private void retryDelete(PluginCall call, String localPath) {
+        try {
+            if (performDeleteFile(localPath)) resolveSuccess(call, null, null);
+            else resolveError(call, "Failed to delete file");
+        } catch (SecurityException e) {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q && e instanceof RecoverableSecurityException) {
+                handleRecoverableDelete(call, localPath, e);
+            } else {
+                resolveError(call, "Error: " + e.getMessage());
+            }
+        } catch (Exception e) {
+            resolveError(call, "Error: " + e.getMessage());
+        }
+    }
+
+    private boolean performDeleteFile(String localPath) {
+        ContentResolver resolver = getContext().getContentResolver();
+        boolean deleted = false;
+
+        if (localPath.startsWith(SCHEME_CONTENT)) {
+            deleted = tryDelete(() -> resolver.delete(Uri.parse(localPath), null, null) > 0);
+        }
+        if (!deleted) {
+            deleted = tryDelete(() -> resolver.delete(MediaStore.Audio.Media.EXTERNAL_CONTENT_URI, MediaStore.Audio.Media.DATA + "=?", new String[]{localPath}) > 0);
+        }
+        if (!deleted) {
+            File file = new File(localPath);
+            deleted = !file.exists() || file.delete();
+        }
+        return deleted;
+    }
+
     // --- 工具辅助方法 ---
 
     private boolean isSystemDirectory(File dir) {
-        String path = dir.getAbsolutePath();
-        File ext = Environment.getExternalStorageDirectory();
-        if (ext != null) {
-            String root = ext.getAbsolutePath();
-            if (path.startsWith(root + "/Android/data") || path.startsWith(root + "/Android/obb")) return true;
+        String path = dir.getAbsolutePath().toLowerCase();
+        if (cachedStorageRoot == null) {
+            File ext = Environment.getExternalStorageDirectory();
+            cachedStorageRoot = ext != null ? ext.getAbsolutePath().toLowerCase() : "";
         }
-        return path.contains("/.trash") || path.contains("/.cache");
+        if (!cachedStorageRoot.isEmpty()
+                && (path.startsWith(cachedStorageRoot + "/android/data") || path.startsWith(cachedStorageRoot + "/android/obb"))) {
+            return true;
+        }
+        for (String pattern : DEFAULT_EXCLUDED_PATH_PATTERNS) {
+            if (path.contains(pattern)) return true;
+        }
+        if (excludedFolderSet != null) {
+            for (String excluded : excludedFolderSet) {
+                if (path.contains(excluded.toLowerCase())) return true;
+            }
+        }
+        return path.contains("/.trash") || path.contains("/.cache")
+                || path.contains("/tencent/micromsg")
+                || path.contains("/tencent/mobileqq")
+                || path.contains("/qq_collection");
+    }
+
+    // --- 排除目录管理 ---
+
+    @PluginMethod
+    public void getExcludedFolders(PluginCall call) {
+        JSArray arr = new JSArray();
+        for (String folder : loadExcludedFolders()) arr.put(folder);
+        call.resolve(new JSObject().put("success", true).put("folders", arr));
+    }
+
+    @PluginMethod
+    public void addExcludedFolder(PluginCall call) {
+        String folder = call.getString("folder");
+        if (folder == null || folder.trim().isEmpty()) {
+            call.resolve(new JSObject().put("success", false).put("error", "folder is required"));
+            return;
+        }
+        Set<String> folders = loadExcludedFolders();
+        folders.add(normalizeExcludedPath(folder.trim()));
+        saveExcludedFolders(folders);
+        call.resolve(new JSObject().put("success", true).put("folder", folder));
+    }
+
+    @PluginMethod
+    public void removeExcludedFolder(PluginCall call) {
+        String folder = call.getString("folder");
+        if (folder == null || folder.trim().isEmpty()) {
+            call.resolve(new JSObject().put("success", false).put("error", "folder is required"));
+            return;
+        }
+        Set<String> folders = loadExcludedFolders();
+        folders.remove(folder.trim());
+        saveExcludedFolders(folders);
+        call.resolve(new JSObject().put("success", true).put("folder", folder));
+    }
+
+    @PluginMethod
+    public void pickExcludedDirectory(PluginCall call) {
+        Intent intent = new Intent(Intent.ACTION_OPEN_DOCUMENT_TREE);
+        startActivityForResult(call, intent, "handlePickExcludedDirectoryResult");
+    }
+
+    @ActivityCallback
+    private void handlePickExcludedDirectoryResult(PluginCall call, ActivityResult result) {
+        if (result.getResultCode() != Activity.RESULT_OK || result.getData() == null) {
+            call.resolve(new JSObject().put("success", false).put("error", "cancelled"));
+            return;
+        }
+        Uri treeUri = result.getData().getData();
+        if (treeUri == null) {
+            call.resolve(new JSObject().put("success", false).put("error", "No directory selected"));
+            return;
+        }
+        String relativePath = extractPathFromTreeUri(treeUri);
+        String path = relativePath != null ? relativePath : "";
+        if (!path.isEmpty()) {
+            Set<String> folders = loadExcludedFolders();
+            folders.add(normalizeExcludedPath(path));
+            saveExcludedFolders(folders);
+        }
+        call.resolve(new JSObject()
+                .put("success", !path.isEmpty())
+                .put("path", path)
+                .put("uri", treeUri.toString()));
+    }
+
+    private Set<String> loadExcludedFolders() {
+        SharedPreferences prefs = getContext().getSharedPreferences(EXCLUDED_PREFS, Context.MODE_PRIVATE);
+        String raw = prefs.getString(EXCLUDED_FOLDERS_KEY, "");
+        if (raw.isEmpty()) return new HashSet<>();
+        Set<String> set = new HashSet<>();
+        for (String part : raw.split(SEPARATOR)) {
+            if (!part.isEmpty()) set.add(part);
+        }
+        return set;
+    }
+
+    private void saveExcludedFolders(Set<String> folders) {
+        String raw = String.join(SEPARATOR, folders);
+        getContext().getSharedPreferences(EXCLUDED_PREFS, Context.MODE_PRIVATE)
+                .edit().putString(EXCLUDED_FOLDERS_KEY, raw).apply();
+    }
+
+    private String normalizeExcludedPath(String path) {
+        String normalized = path.trim();
+        if (normalized.startsWith("/")) normalized = normalized.substring(1);
+        if (normalized.endsWith("/")) normalized = normalized.substring(0, normalized.length() - 1);
+        return normalized;
     }
 
     private boolean isAudioFile(String fileName) {
@@ -423,11 +654,24 @@ public class LocalMusicPlugin extends Plugin {
 
     /** 为普通文件路径、file URI 和 content URI 设置 MediaMetadataRetriever 数据源。 */
     private void setRetrieverDataSource(MediaMetadataRetriever retriever, String localPath) {
-        if (localPath.startsWith("content://")) {
+        if (localPath.startsWith(SCHEME_CONTENT)) {
             retriever.setDataSource(getContext(), Uri.parse(localPath));
             return;
         }
-        retriever.setDataSource(resolvePlainPath(localPath));
+        String path = resolvePlainPath(localPath);
+        File file = new File(path);
+        if (!file.exists()) {
+            throw new RuntimeException("File not found: " + path);
+        }
+        try (FileInputStream fis = new FileInputStream(file)) {
+            retriever.setDataSource(fis.getFD());
+        } catch (IOException e) {
+            try {
+                retriever.setDataSource(path);
+            } catch (Exception ex) {
+                throw new RuntimeException("Cannot open file: " + path, e);
+            }
+        }
     }
 
     /** 根据图片魔数识别常见封面 MIME 类型。 */
@@ -453,8 +697,11 @@ public class LocalMusicPlugin extends Plugin {
         return "image/jpeg";
     }
 
-    /** 从 ID3v2 tag 中提取首个 USLT 歌词帧。 */
-    private String extractUsltLyrics(String localPath) throws IOException {
+    /** 原文与译文的分隔标记，与 id3-embed.ts 中的 TLYRIC_DELIMITER 对应。 */
+    private static final String TLYRIC_DELIMITER = "[TLYRIC]";
+
+    /** 从 ID3v2 tag 中提取首个 USLT 歌词帧，按分隔符拆分为 [lyric, tlyric]。 */
+    private String[] extractUsltLyrics(String localPath) throws IOException {
         try (InputStream input = openLocalInputStream(localPath)) {
             if (input == null) return null;
 
@@ -480,7 +727,15 @@ public class LocalMusicPlugin extends Plugin {
 
                 if ("USLT".equals(frameId)) {
                     String lyric = decodeUsltFrame(Arrays.copyOfRange(tag, offset + 10, offset + 10 + frameSize));
-                    return isValid(lyric) ? lyric : null;
+                    if (!isValid(lyric)) return null;
+
+                    int delimIdx = lyric.indexOf(TLYRIC_DELIMITER);
+                    if (delimIdx >= 0) {
+                        String original = lyric.substring(0, delimIdx).trim();
+                        String translation = lyric.substring(delimIdx + TLYRIC_DELIMITER.length()).trim();
+                        return new String[]{ original, isValid(translation) ? translation : null };
+                    }
+                    return new String[]{ lyric, null };
                 }
 
                 offset += 10 + frameSize;
@@ -491,7 +746,7 @@ public class LocalMusicPlugin extends Plugin {
 
     /** 打开普通文件路径、file URI 或 content URI 对应的输入流。 */
     private InputStream openLocalInputStream(String localPath) throws IOException {
-        if (localPath.startsWith("content://")) {
+        if (localPath.startsWith(SCHEME_CONTENT)) {
             return getContext().getContentResolver().openInputStream(Uri.parse(localPath));
         }
         String path = resolvePlainPath(localPath);

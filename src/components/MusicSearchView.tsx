@@ -1,5 +1,6 @@
 import {
   useEffect,
+  useMemo,
   useRef,
   useState,
   type ChangeEvent,
@@ -66,6 +67,7 @@ export function MusicSearchView({
     setSearchPage,
     searchIntent,
     setSearchIntent,
+    sourceConfigs,
   } = useMusicStore(
     useShallow((s) => ({
       source: s.searchSource,
@@ -82,6 +84,7 @@ export function MusicSearchView({
       setSearchPage: s.setSearchPage,
       searchIntent: s.searchIntent,
       setSearchIntent: s.setSearchIntent,
+      sourceConfigs: s.sourceConfigs,
     }))
   );
 
@@ -90,7 +93,20 @@ export function MusicSearchView({
   const seenRef = useRef(new Set<string>());
   const searchInputRef = useRef<HTMLInputElement>(null);
   const wrapperRef = useRef<HTMLDivElement>(null);
+  const isSearchingRef = useRef(false);
+  const isInputFocusedRef = useRef(false);
   const navigate = useNavigate();
+
+  const visibleSourceOptions = useMemo(() => {
+    const visible = sourceConfigs.filter((c) => c.visible);
+    return [
+      { value: "all", label: "聚合搜索" },
+      ...visible.map((c) => {
+        const opt = searchOptions[c.source];
+        return { value: c.source, label: opt || c.source };
+      }),
+    ];
+  }, [sourceConfigs]);
 
   /* ---------------- 搜索建议 ---------------- */
   const [suggestions, setSuggestions] = useState<SearchSuggestionItem[]>([]);
@@ -100,15 +116,24 @@ export function MusicSearchView({
 
   useEffect(() => {
     const fetchSuggestions = async () => {
-      if (!debouncedSearchQuery.trim()) {
+      // 守卫 1：空查询或正在搜索 → 清空并隐藏
+      if (!debouncedSearchQuery.trim() || isSearchingRef.current) {
         setSuggestions([]);
+        setShowSuggestions(false);
         return;
       }
       try {
         const results =
           await musicApi.getSearchSuggestions(debouncedSearchQuery);
-        setSuggestions(results);
-        setActiveSuggestionIndex(-1);
+        // 守卫 2：双重检查——输入框仍聚焦 && 未进入搜索状态
+        if (
+          document.activeElement === searchInputRef.current &&
+          !isSearchingRef.current
+        ) {
+          setSuggestions(results);
+          setShowSuggestions(results.length > 0);
+          setActiveSuggestionIndex(-1);
+        }
       } catch (e) {
         console.error("Failed to fetch suggestions", e);
       }
@@ -137,13 +162,12 @@ export function MusicSearchView({
     }
     setSearchQuery(suggestion.text);
     setShowSuggestions(false);
-    if (searchIntent?.type !== "album") setSearchIntent(null);
-    fetchPage(1, true, suggestion.text);
+    performSearch(suggestion.text);
   };
 
   const handleSearchChange = (event: ChangeEvent<HTMLInputElement>) => {
     setSearchQuery(event.target.value);
-    setShowSuggestions(true);
+    isSearchingRef.current = false;
     setActiveSuggestionIndex(-1);
   };
 
@@ -172,18 +196,19 @@ export function MusicSearchView({
       if (showSuggestions && activeItem) {
         handleSelectSuggestion(activeItem);
       } else {
-        setSearchIntent(null);
-        fetchPage(1, true);
         setShowSuggestions(false);
+        performSearch();
       }
     }
   };
 
   const clearSearch = () => {
+    isSearchingRef.current = true;
     setSearchQuery("");
     setSuggestions([]);
     setShowSuggestions(false);
     searchInputRef.current?.focus();
+    isSearchingRef.current = false;
   };
 
   /* ---------------- 请求核心 ---------------- */
@@ -193,6 +218,15 @@ export function MusicSearchView({
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [searchIntent, searchResults.length]);
+
+  /** 用户确认搜索后统一调用（回车／点击搜索建议），锁定建议弹窗并执行搜索 */
+  const performSearch = (queryText?: string) => {
+    isSearchingRef.current = true;
+    setShowSuggestions(false);
+    const q = queryText ?? searchQuery;
+    if (searchIntent?.type !== "album") setSearchIntent(null);
+    fetchPage(1, true, q);
+  };
 
   const fetchPage = async (
     nextPage: number,
@@ -263,9 +297,29 @@ export function MusicSearchView({
       if ((e as Error)?.name !== "AbortError")
         toast.error("搜索失败，请稍后重试");
     } finally {
+      if (reset) isSearchingRef.current = false;
       if (version === versionRef.current) setSearchLoading(false);
     }
   };
+
+  /* ---------------- 切换音源自动搜索 ---------------- */
+  const isFirstSourceRef = useRef(true);
+
+  useEffect(() => {
+    if (isFirstSourceRef.current) {
+      isFirstSourceRef.current = false;
+      return;
+    }
+    if (searchQuery.trim().length >= 2) {
+      isSearchingRef.current = true;
+      setShowSuggestions(false);
+      setSearchIntent(null);
+      fetchPage(1, true);
+      searchInputRef.current?.focus();
+      isSearchingRef.current = false;
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [source]);
 
   /* ---------------- UI ---------------- */
   return (
@@ -286,7 +340,12 @@ export function MusicSearchView({
               onChange={handleSearchChange}
               onKeyDown={handleKeyDown}
               onFocus={() => {
+                isInputFocusedRef.current = true;
                 if (suggestions.length > 0) setShowSuggestions(true);
+              }}
+              onBlur={() => {
+                isInputFocusedRef.current = false;
+                setShowSuggestions(false);
               }}
               placeholder="搜索音乐、歌手或专辑..."
               className="h-full flex-1 border-0 bg-transparent! px-3 text-sm shadow-none focus-visible:ring-0 placeholder:text-muted-foreground/60"
@@ -312,13 +371,16 @@ export function MusicSearchView({
               value={source}
               onValueChange={(v) => setSource(v as MusicSource)}
             >
-              <SelectTrigger className="h-7 w-auto min-w-[72px] shrink-0 border-0 bg-transparent! px-2 text-xs text-muted-foreground shadow-none hover:text-foreground focus:ring-0">
+              <SelectTrigger
+                onPointerDown={() => searchInputRef.current?.blur()}
+                className="h-7 w-auto min-w-[72px] shrink-0 border-0 bg-transparent! px-2 text-xs text-muted-foreground shadow-none hover:text-foreground focus:ring-0"
+              >
                 <SelectValue />
               </SelectTrigger>
               <SelectContent align="end">
-                {Object.entries(searchOptions).map(([k, v]) => (
-                  <SelectItem key={k} value={k}>
-                    {v}
+                {visibleSourceOptions.map((opt) => (
+                  <SelectItem key={opt.value} value={opt.value}>
+                    {opt.label}
                   </SelectItem>
                 ))}
               </SelectContent>

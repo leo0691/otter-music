@@ -2,7 +2,10 @@ import { create } from "zustand";
 import { persist, createJSONStorage } from "zustand/middleware";
 import { storeKey } from "./store-keys";
 import { idbStorage } from "@/lib/storage-adapter";
-import { type UpdateInfo, checkUpdate as apiCheckUpdate } from "@/lib/api/update";
+import {
+  type UpdateInfo,
+  checkUpdate as apiCheckUpdate,
+} from "@/lib/api/update";
 import { Capacitor } from "@capacitor/core";
 import { App } from "@capacitor/app";
 import { toast } from "react-hot-toast";
@@ -12,6 +15,7 @@ interface AppState {
   currentVersion: string;
   lastCheckTime: number;
   latestVersionInfo: UpdateInfo | null;
+  hasUpdate: boolean;
   isChecking: boolean;
 }
 
@@ -24,6 +28,7 @@ const initialState: AppState = {
   currentVersion: "0.0.0",
   lastCheckTime: 0,
   latestVersionInfo: null,
+  hasUpdate: false,
   isChecking: false,
 };
 
@@ -77,6 +82,12 @@ export const useAppStore = create<AppState & AppActions>()(
         const state = get();
 
         if (state.isChecking) return;
+        if (
+          silent &&
+          state.lastCheckTime &&
+          now - state.lastCheckTime < 24 * 60 * 60 * 1000
+        )
+          return;
         set({ isChecking: true });
 
         try {
@@ -89,7 +100,8 @@ export const useAppStore = create<AppState & AppActions>()(
             compareVersions(currentVersion, info.latestVersion) < 0;
 
           set({
-            latestVersionInfo: hasUpdate ? info : null,
+            latestVersionInfo: info,
+            hasUpdate,
             lastCheckTime: now,
           });
 
@@ -101,11 +113,20 @@ export const useAppStore = create<AppState & AppActions>()(
           } else if (!silent) {
             toast.success(`当前已是最新版本 (${currentVersion})`);
           }
-
         } catch (error) {
-          logger.error("app-store", "Update check failed", error, {
-            silent,
-          });
+          if (
+            silent &&
+            error instanceof DOMException &&
+            error.name === "AbortError"
+          ) {
+            logger.info("app-store", "Update check timed out (offline)", {
+              silent,
+            });
+          } else {
+            logger.error("app-store", "Update check failed", error, {
+              silent,
+            });
+          }
           if (!silent) {
             toast.error("检查更新失败，请稍后重试");
           }
@@ -120,8 +141,10 @@ export const useAppStore = create<AppState & AppActions>()(
       name: storeKey.AppStore,
       storage: createJSONStorage(() => idbStorage),
       partialize: (state) => ({
+        currentVersion: state.currentVersion,
         lastCheckTime: state.lastCheckTime,
         latestVersionInfo: state.latestVersionInfo,
+        hasUpdate: state.hasUpdate,
       }),
     }
   )

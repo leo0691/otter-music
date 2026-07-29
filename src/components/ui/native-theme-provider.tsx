@@ -1,6 +1,12 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import {
+  createContext,
+  useCallback,
+  useContext,
+  useEffect,
+  useState,
+} from "react";
 import {
   ThemeProvider as NextThemesProvider,
   type ThemeProviderProps,
@@ -9,9 +15,22 @@ import { App } from "@capacitor/app";
 import { IS_NATIVE } from "@/lib/api/config";
 import { LocalMusicPlugin } from "@/plugins/local-music";
 
-/**
- * 获取系统主题并更新状态
- */
+type ThemePreference = "system" | "light" | "dark";
+
+interface ThemePreferenceContextValue {
+  themePref: ThemePreference;
+  setThemePref: (pref: ThemePreference) => void;
+}
+
+const ThemePreferenceContext = createContext<ThemePreferenceContextValue>({
+  themePref: "system",
+  setThemePref: () => {},
+});
+
+export function useThemePreference() {
+  return useContext(ThemePreferenceContext);
+}
+
 async function fetchSystemTheme(): Promise<"light" | "dark" | null> {
   try {
     const result = await LocalMusicPlugin.getSystemDarkMode();
@@ -21,56 +40,107 @@ async function fetchSystemTheme(): Promise<"light" | "dark" | null> {
   }
 }
 
+function getMatchMediaTheme(): "light" | "dark" | null {
+  if (typeof window === "undefined") return null;
+  try {
+    return window.matchMedia("(prefers-color-scheme: dark)").matches
+      ? "dark"
+      : "light";
+  } catch {
+    return null;
+  }
+}
+
+function readStoredPreference(): ThemePreference {
+  try {
+    const stored = localStorage.getItem("theme");
+    if (stored === "light" || stored === "dark" || stored === "system") {
+      return stored;
+    }
+  } catch {}
+  return "system";
+}
+
 /**
  * 原生平台主题 Provider
  *
  * 解决 Capacitor WebView 中 next-themes 无法正确检测系统主题的问题。
- * 在原生平台时，通过原生插件获取真实的系统主题状态，并在应用从后台恢复时重新检测。
+ * 通过原生插件 + matchMedia 双重监听，实现系统主题实时感知。
+ * 当用户选择"跟随系统"时实时响应系统主题变更，无需退出重进。
+ * 使用 next-themes 默认 localStorage key("theme")持久化用户选择。
  */
 export function NativeThemeProvider({
   children,
   ...props
 }: ThemeProviderProps) {
-  const [nativeTheme, setNativeTheme] = useState<"light" | "dark" | null>(null);
+  const [systemTheme, setSystemTheme] = useState<"light" | "dark" | null>(
+    !IS_NATIVE ? null : getMatchMediaTheme()
+  );
+  const [themePref, setThemePrefState] =
+    useState<ThemePreference>(readStoredPreference);
   const [isReady, setIsReady] = useState(!IS_NATIVE);
+
+  const setThemePref = useCallback((pref: ThemePreference) => {
+    setThemePrefState(pref);
+    try {
+      localStorage.setItem("theme", pref);
+    } catch {}
+  }, []);
 
   useEffect(() => {
     if (!IS_NATIVE) return;
 
-    // 初始获取系统主题
     fetchSystemTheme().then((theme) => {
-      if (theme) setNativeTheme(theme);
+      if (theme) setSystemTheme(theme);
       setIsReady(true);
     });
 
-    // 应用从后台恢复时重新检测系统主题
     const handleResume = () => {
       fetchSystemTheme().then((theme) => {
-        if (theme) setNativeTheme(theme);
+        if (theme) setSystemTheme(theme);
       });
     };
 
     App.addListener("resume", handleResume);
 
+    let darkModeListener: Awaited<
+      ReturnType<typeof LocalMusicPlugin.addListener>
+    > | null = null;
+    LocalMusicPlugin.addListener("darkModeChange", (event) => {
+      setSystemTheme(event.isDarkMode ? "dark" : "light");
+    }).then((handle) => {
+      darkModeListener = handle;
+    });
+
+    const mql = window.matchMedia("(prefers-color-scheme: dark)");
+    const handleChange = (e: MediaQueryListEvent) => {
+      setSystemTheme(e.matches ? "dark" : "light");
+    };
+    mql.addEventListener("change", handleChange);
+
     return () => {
       App.removeAllListeners();
+      darkModeListener?.remove();
+      mql.removeEventListener("change", handleChange);
     };
   }, []);
 
-  // 原生平台且获取到主题后，强制使用该主题
-  if (IS_NATIVE && nativeTheme) {
-    return (
-      <NextThemesProvider {...props} forcedTheme={nativeTheme}>
-        {children}
-      </NextThemesProvider>
-    );
-  }
+  const forcedTheme: string | undefined =
+    themePref === "system"
+      ? IS_NATIVE
+        ? (systemTheme ?? undefined)
+        : undefined
+      : themePref;
 
-  // 原生平台但未获取到主题时，显示空白或加载状态
   if (IS_NATIVE && !isReady) {
     return <div style={{ visibility: "hidden" }}>{children}</div>;
   }
 
-  // 非原生平台，使用默认行为
-  return <NextThemesProvider {...props}>{children}</NextThemesProvider>;
+  return (
+    <ThemePreferenceContext.Provider value={{ themePref, setThemePref }}>
+      <NextThemesProvider {...props} forcedTheme={forcedTheme}>
+        {children}
+      </NextThemesProvider>
+    </ThemePreferenceContext.Provider>
+  );
 }

@@ -8,7 +8,6 @@ import type {
   SearchSuggestionItem,
 } from "@/types/music";
 import { cachedFetch } from "@/lib/utils/cache";
-import { SOURCE_RANK } from "@/lib/utils/search-helper";
 import { searchSuggest } from "@/lib/netease/netease-api";
 import { MusicProviderFactory, isAbort } from "./music-provider";
 import { logger } from "@/lib/logger";
@@ -57,40 +56,60 @@ export const musicApi = {
 
   /* ---------------- 最佳匹配搜索（串行） ---------------- */
 
-  async searchBestMatch(
-    query: string,
-    sources: MusicSource[],
-    predicate: (track: MusicTrack) => boolean,
-    count = 5,
-    signal?: AbortSignal,
-    ranker?: (track: MusicTrack, originalIndex: number) => number
-  ): Promise<MusicTrack | null> {
-    const sortedSources = [...sources].sort((a, b) => {
-      const rankA = SOURCE_RANK[a] ?? 999;
-      const rankB = SOURCE_RANK[b] ?? 999;
-      return rankA - rankB;
-    });
-
-    for (const source of sortedSources) {
+  async searchBestMatch({
+    query,
+    sources,
+    predicate,
+    count = 20,
+    signal,
+    ranker,
+    targetTrack,
+  }: {
+    query: string;
+    sources: MusicSource[];
+    predicate: (track: MusicTrack) => boolean;
+    count?: number;
+    signal?: AbortSignal;
+    ranker?: (track: MusicTrack, originalIndex: number) => number;
+    targetTrack?: MusicTrack;
+  }): Promise<MusicTrack | null> {
+    for (const source of sources) {
       if (signal?.aborted) return null;
       try {
-        const res = await MusicProviderFactory.getProvider(source).search(
-          query,
+        const provider = MusicProviderFactory.getProvider(source);
+        const effectivePredicate =
+          targetTrack && provider.getAutoMatchPredicate
+            ? provider.getAutoMatchPredicate(targetTrack)
+            : predicate;
+        const effectiveQuery =
+          targetTrack && provider.getAutoMatchQuery
+            ? provider.getAutoMatchQuery(targetTrack, query)
+            : query;
+        const effectiveCount =
+          targetTrack && provider.getAutoMatchCount
+            ? provider.getAutoMatchCount(targetTrack)
+            : count;
+        const effectiveRanker =
+          targetTrack && provider.getAutoMatchRanker
+            ? provider.getAutoMatchRanker(targetTrack)
+            : ranker;
+        const res = await provider.search(
+          effectiveQuery,
           1,
-          count,
+          effectiveCount,
           signal
         );
-        const match = ranker
+        const match = effectiveRanker
           ? res.items
               .map((track, originalIndex) => ({ track, originalIndex }))
-              .filter(({ track }) => predicate(track))
+              .filter(({ track }) => effectivePredicate(track))
               .sort(
                 (a, b) =>
-                  ranker(b.track, b.originalIndex) -
-                    ranker(a.track, a.originalIndex) ||
+                  effectiveRanker(b.track, b.originalIndex) -
+                    effectiveRanker(a.track, a.originalIndex) ||
                   a.originalIndex - b.originalIndex
               )[0]?.track
-          : res.items.find(predicate);
+          : res.items.find(effectivePredicate);
         if (match) return match;
       } catch (e) {
         if (isAbort(e)) throw e;

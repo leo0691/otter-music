@@ -1,4 +1,5 @@
-import { useEffect, useState, useRef } from "react";
+import { useEffect, useState, useRef, useMemo } from "react";
+import { filterTracks } from "@/lib/utils/filter-tracks";
 import { useLocation, useNavigate } from "react-router-dom";
 import { MusicTrackList } from "@/components/MusicTrackList";
 import {
@@ -24,6 +25,7 @@ import {
   ListMusic,
 } from "lucide-react";
 import toast from "react-hot-toast";
+import { writeClipboardText } from "@/lib/clipboard";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -32,18 +34,16 @@ import {
 } from "@/components/ui/dropdown-menu";
 import { Button } from "@/components/ui/button";
 import { useMusicStore } from "@/store/music-store";
+import { useShallow } from "zustand/react/shallow";
 import { useNeteaseStore } from "@/store/netease-store";
 import { SongDetail } from "@/lib/netease/netease-raw-types";
 import { ArtistAlbumSheet } from "@/components/ArtistAlbumSheet";
-import {
-  ArtistAlbumSheetNavigationState,
-  createArtistAlbumSheetState,
-  getArtistAlbumSheetBackTarget,
-  shouldRestoreArtistAlbumSheet,
-} from "@/lib/navigation/netease-detail-navigation";
+import type { ArtistAlbumSheetNavigationState } from "@/lib/navigation/netease-detail-navigation";
+import { useArtistAlbumSheet } from "@/hooks/useArtistAlbumSheet";
 import { useMarketSession } from "@/store/session/market-session";
 import { logger } from "@/lib/logger";
 import { useDetailPage } from "@/hooks/useDetailPage";
+import { useExitLayer } from "@/hooks/useExitLayer";
 
 interface NeteaseDetailProps {
   id: string | null;
@@ -78,18 +78,38 @@ export function NeteaseDetail({
   const navigate = useNavigate();
   const location = useLocation();
   const scrollRef = useRef<HTMLDivElement>(null);
-  const [isAlbumSheetOpen, setIsAlbumSheetOpen] = useState(false);
   const [offset, setOffset] = useState(0);
   const [hasMore, setHasMore] = useState(false);
   const [loadingMore, setLoadingMore] = useState(false);
+  const [searchQuery, setSearchQuery] = useState("");
 
-  const { createPlaylist, setPlaylistTracks } = useMusicStore();
+  const { createPlaylist, setPlaylistTracks } = useMusicStore(
+    useShallow((state) => ({
+      createPlaylist: state.createPlaylist,
+      setPlaylistTracks: state.setPlaylistTracks,
+    }))
+  );
   const isShuffle = useMusicStore((state) => state.isShuffle);
   const { cookie } = useNeteaseStore();
   const { toggleAlbumInSession } = useMarketSession();
   const navigationState =
     (location.state as ArtistAlbumSheetNavigationState | null | undefined) ??
     null;
+  const { push: pushExitLayer, pop: popExitLayer } = useExitLayer();
+
+  const {
+    isOpen: isAlbumSheetOpen,
+    setIsOpen: setIsAlbumSheetOpen,
+    handleBack,
+  } = useArtistAlbumSheet({
+    id,
+    type,
+    navigationState,
+    pathname: location.pathname,
+    navigate,
+    pushExitLayer,
+    popExitLayer,
+  });
 
   const { loading, error, detail, tracks, setDetail, setTracks, retry } =
     useDetailPage<UnifiedDetail>(
@@ -143,7 +163,7 @@ export function NeteaseDetail({
 
         return {
           detail: rawDetail,
-          tracks: rawTracks.map(convertSongToMusicTrack),
+          tracks: rawTracks.map((s) => convertSongToMusicTrack(s)),
         };
       },
       [id, type, cookie]
@@ -156,40 +176,19 @@ export function NeteaseDetail({
     }
   }, [type, detail, tracks]);
 
-  useEffect(() => {
-    if (!shouldRestoreArtistAlbumSheet(type, id, navigationState)) return;
-    setIsAlbumSheetOpen(true);
-
-    navigate(location.pathname, { replace: true, state: null });
-  }, [id, location.pathname, navigate, navigationState, type]);
-
-  const handleBack = () => {
-    const backTarget = getArtistAlbumSheetBackTarget(type, navigationState);
-    if (backTarget) {
-      navigate(`/netease-artist/${backTarget.artistId}`, {
-        replace: true,
-        state: createArtistAlbumSheetState(
-          backTarget.artistId,
-          backTarget.artistName
-        ),
-      });
-      return;
-    }
-
-    onBack();
+  const onHeaderBack = () => {
+    handleBack(onBack);
   };
 
   const handleShare = async () => {
     if (!detail || !id) return;
-    try {
-      const typeLabel = { playlist: "歌单", artist: "歌手", album: "专辑" }[
-        type
-      ];
-      await navigator.clipboard.writeText(
-        `【网易云${typeLabel}】${detail.name}\nhttps://music.163.com/#/${type}?id=${id}`
-      );
+    const typeLabel = { playlist: "歌单", artist: "歌手", album: "专辑" }[type];
+    const ok = await writeClipboardText(
+      `【网易云${typeLabel}】${detail.name}\nhttps://music.163.com/#/${type}?id=${id}`
+    );
+    if (ok) {
       toast.success("链接已复制");
-    } catch {
+    } else {
       toast.error("复制失败");
     }
   };
@@ -247,13 +246,18 @@ export function NeteaseDetail({
     }
   };
 
+  const filteredTracks = useMemo(
+    () => filterTracks(tracks, searchQuery),
+    [tracks, searchQuery]
+  );
+
   const handleLoadMore = async () => {
     if (!id || loadingMore || !hasMore || type !== "artist") return;
     setLoadingMore(true);
     try {
       const res = await getArtistSongs(id, 50, offset);
       if (res?.songs?.length) {
-        const newTracks = res.songs.map(convertSongToMusicTrack);
+        const newTracks = res.songs.map((s) => convertSongToMusicTrack(s));
         setTracks((prev) => [...prev, ...newTracks]);
 
         const nextOffset = offset + newTracks.length;
@@ -347,7 +351,7 @@ export function NeteaseDetail({
       loading={loading}
       error={error}
       title="详情"
-      onBack={handleBack}
+      onBack={onHeaderBack}
       onRetry={retry}
       detail={genericDetail}
       scrollRef={scrollRef}
@@ -357,10 +361,12 @@ export function NeteaseDetail({
       onPlayTrack={
         tracks.length > 0 ? (track) => onPlay(track, tracks) : undefined
       }
+      searchQuery={searchQuery}
+      onSearchChange={setSearchQuery}
     >
       <div className="flex-1 min-h-0">
         <MusicTrackList
-          tracks={tracks}
+          tracks={filteredTracks}
           scrollContainerRef={scrollRef}
           onPlay={(track) => onPlay(track, tracks)}
           currentTrackId={currentTrackId}

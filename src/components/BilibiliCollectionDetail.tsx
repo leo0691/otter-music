@@ -1,4 +1,5 @@
-import { useRef, useState, useCallback } from "react";
+import { useRef, useState, useCallback, useMemo } from "react";
+import { filterTracks } from "@/lib/utils/filter-tracks";
 import { MusicTrackList } from "@/components/MusicTrackList";
 import {
   GenericDetailPage,
@@ -44,6 +45,7 @@ export function BilibiliCollectionDetail({
   const pageRef = useRef(1);
   const totalRef = useRef(0);
   const [loadingMore, setLoadingMore] = useState(false);
+  const [searchQuery, setSearchQuery] = useState("");
 
   const albumId = id || "";
   const isSeries = albumId ? !!parseBilibiliAlbumId(albumId) : false;
@@ -107,6 +109,11 @@ export function BilibiliCollectionDetail({
   const activeTracks = tracks.filter((t) => !t.is_deleted);
   const hasMore = isSeries && tracks.length < totalRef.current;
 
+  const filteredTracks = useMemo(
+    () => filterTracks(activeTracks, searchQuery),
+    [activeTracks, searchQuery]
+  );
+
   const genericDetail: GenericDetailData | undefined = detail
     ? {
         title: detail.title,
@@ -126,9 +133,13 @@ export function BilibiliCollectionDetail({
       onRetry={retry}
       detail={genericDetail}
       scrollRef={scrollRef}
+      tracks={activeTracks}
+      onPlayTrack={(track) => onPlay(track, activeTracks)}
+      searchQuery={searchQuery}
+      onSearchChange={setSearchQuery}
     >
       <MusicTrackList
-        tracks={activeTracks}
+        tracks={filteredTracks}
         onPlay={(track) => onPlay(track, activeTracks)}
         currentTrackId={currentTrackId}
         isPlaying={isPlaying}

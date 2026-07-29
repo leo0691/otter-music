@@ -1,4 +1,4 @@
-import { registerPlugin } from "@capacitor/core";
+import { registerPlugin, type PluginListenerHandle } from "@capacitor/core";
 
 export interface LocalMusicFile {
   id: string;
@@ -33,6 +33,7 @@ export interface EmbeddedCoverResult {
 export interface EmbeddedLyricsResult {
   success: boolean;
   lyric?: string;
+  tlyric?: string;
   error?: string;
 }
 
@@ -56,6 +57,21 @@ export interface SystemDarkModeResult {
   isDarkMode: boolean;
 }
 
+export interface DarkModeChangeEvent {
+  isDarkMode: boolean;
+}
+
+export interface ExcludedFoldersResult {
+  success: boolean;
+  folders: string[];
+}
+
+export interface ExcludedFolderMutationResult {
+  success: boolean;
+  folder?: string;
+  error?: string;
+}
+
 export interface LocalMusicPlugin {
   scanLocalMusic(): Promise<ScanResult>;
   scanAllStorage(): Promise<ScanResult>;
@@ -71,6 +87,18 @@ export interface LocalMusicPlugin {
   deleteLocalMusic(options: { localPath: string }): Promise<DeleteResult>;
   pickDownloadDirectory(): Promise<PickDirectoryResult>;
   getSystemDarkMode(): Promise<SystemDarkModeResult>;
+  getExcludedFolders(): Promise<ExcludedFoldersResult>;
+  addExcludedFolder(options: {
+    folder: string;
+  }): Promise<ExcludedFolderMutationResult>;
+  removeExcludedFolder(options: {
+    folder: string;
+  }): Promise<ExcludedFolderMutationResult>;
+  pickExcludedDirectory(): Promise<PickDirectoryResult>;
+  addListener(
+    eventName: "darkModeChange",
+    listenerFunc: (event: DarkModeChangeEvent) => void
+  ): Promise<PluginListenerHandle>;
 }
 
 const LocalMusicPlugin = registerPlugin<LocalMusicPlugin>("LocalMusicPlugin");

@@ -52,7 +52,7 @@ export class MiguApiProvider implements IMusicProvider {
   async searchArtist(
     query: string,
     page: number,
-    count: number,
+    count: number
   ): Promise<SearchPageResult<MusicTrack>> {
     return this.search(query, page, count);
   }
@@ -63,7 +63,7 @@ export class MiguApiProvider implements IMusicProvider {
   async searchAlbum(
     query: string,
     page: number,
-    count: number,
+    count: number
   ): Promise<SearchPageResult<MusicTrack>> {
     return this.search(query, page, count);
   }

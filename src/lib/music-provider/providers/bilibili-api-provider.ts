@@ -1,10 +1,10 @@
 import {
-  AudioFormat,
   MusicTrack,
   SearchIntent,
   SearchPageResult,
   SongLyric,
 } from "@otter-music/shared";
+import { useMusicStore } from "@/store/music-store";
 import {
   getBilibiliCollectionDetail,
   getBilibiliCoverUrl,
@@ -13,19 +13,9 @@ import {
   searchBilibiliCollections,
   searchBilibiliVideos,
 } from "@/lib/bilibili/bilibili-api";
+import { setCachedBilibiliAudioFormat } from "@/lib/bilibili/bilibili-cache";
+import { createAutoMatchPredicate } from "@/lib/bilibili/bilibili-match";
 import { IMusicProvider } from "../interface";
-
-const audioFormatCache = new Map<string, AudioFormat>();
-
-function formatCacheKey(track: Pick<MusicTrack, "id" | "source">): string {
-  return `${track.source}:${track.id}`;
-}
-
-export function getCachedBilibiliAudioFormat(
-  track: Pick<MusicTrack, "id" | "source">
-): AudioFormat | undefined {
-  return audioFormatCache.get(formatCacheKey(track));
-}
 
 export class BilibiliApiProvider implements IMusicProvider {
   source = "bilibili" as const;
@@ -43,7 +33,7 @@ export class BilibiliApiProvider implements IMusicProvider {
   async getUrl(track: MusicTrack, _br?: number): Promise<string | null> {
     const result = await getBilibiliSongUrl(track.url_id || track.id);
     if (result?.format) {
-      audioFormatCache.set(formatCacheKey(track), result.format);
+      setCachedBilibiliAudioFormat(track, result.format);
     }
     return result?.url ?? null;
   }
@@ -82,5 +72,23 @@ export class BilibiliApiProvider implements IMusicProvider {
 
   async getSongDetail(id: string): Promise<unknown> {
     return getBilibiliVideoDetail(id);
+  }
+
+  getAutoMatchQuery(_target: MusicTrack, baseQuery: string): string {
+    const suffix = useMusicStore.getState().bilibiliAutoMatchSuffix;
+    return suffix ? `${baseQuery} ${suffix}` : baseQuery;
+  }
+
+  getAutoMatchCount(_target: MusicTrack): number {
+    return 40;
+  }
+
+  getAutoMatchRanker(_target: MusicTrack) {
+    // 忽略通用打分，直接使用原生索引保持 B 站自带的最佳推荐排序
+    return (_candidate: MusicTrack, originalIndex: number) => -originalIndex;
+  }
+
+  getAutoMatchPredicate(target: MusicTrack) {
+    return createAutoMatchPredicate(target);
   }
 }

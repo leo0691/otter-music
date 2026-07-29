@@ -82,7 +82,7 @@ interface MusicTrackListProps {
   onSelectionModeChange?: (active: boolean) => void;
 }
 
-const ROW_HEIGHT = 48; // 缩小默认估算行高
+const ROW_HEIGHT = 60;
 
 function SortableTrackItem({
   track,
@@ -309,7 +309,7 @@ export function MusicTrackList({
           <>
             <div className="text-center">#</div>
             <div>标题</div>
-            <div className="flex justify-end">
+            <div className="flex justify-end gap-1">
               <Button
                 variant="ghost"
                 size="icon"

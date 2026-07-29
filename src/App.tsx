@@ -10,7 +10,6 @@ import { revokeAll } from "@/lib/utils/blob-registry";
 import { stopBilibiliProxyServer } from "@/lib/bilibili/bilibili-native-player";
 import { Capacitor } from "@capacitor/core";
 import { App as CapacitorApp } from "@capacitor/app";
-
 export default function App() {
   // Sync Logic
   const { syncKey } = useSyncStore();
@@ -28,10 +27,10 @@ export default function App() {
     // 启动时静默检查更新
     useAppStore.getState().checkUpdate(true);
     // 初始化下载记录
-    useDownloadStore.getState().init()
+    useDownloadStore.getState().init();
 
     // 延迟执行缓存清理，避免阻塞首屏
-    if ('requestIdleCallback' in window) {
+    if ("requestIdleCallback" in window) {
       (window as any).requestIdleCallback(() => cleanupCache());
     } else {
       setTimeout(() => cleanupCache(), 5000);

@@ -57,9 +57,7 @@ export function MinePage({ onSelectPlaylist }: MinePageProps) {
   const activePlaylists = useActivePlaylists();
   const isOnline = useNetworkStatus();
   const offlineTracks = useOfflinePlaylist();
-  const enableStreamCache = useMusicStore((s) => s.enableStreamCache);
-  const showOfflinePlaylist =
-    !isOnline && enableStreamCache && offlineTracks.length > 0;
+  const showOfflinePlaylist = !isOnline;
 
   const [newPlaylistName, setNewPlaylistName] = useState("");
   const [isCreateOpen, setIsCreateOpen] = useState(false);
@@ -105,8 +103,10 @@ export function MinePage({ onSelectPlaylist }: MinePageProps) {
           onClick={() => navigate("/history")}
           className="flex-1 flex flex-col items-center justify-center gap-2 p-4 rounded-2xl bg-card/70 hover:bg-card transition-all duration-300"
         >
-          <div className="h-12 w-12 rounded-full bg-primary/10 flex items-center justify-center">
-            <History className="h-6 w-6 text-primary" />
+          <div className="h-12 w-12 rounded-full bg-primary/10 flex items-center justify-center shrink-0 flex-[0_0_48px] min-w-12 min-h-12">
+            <div className="h-6 w-6 shrink-0 flex-[0_0_24px] min-w-6 min-h-6">
+              <History size={24} className="h-full w-full text-primary" />
+            </div>
           </div>
           <span className="text-sm font-medium text-foreground">历史</span>
         </button>
@@ -115,8 +115,10 @@ export function MinePage({ onSelectPlaylist }: MinePageProps) {
           onClick={() => navigate("/queue")}
           className="flex-1 flex flex-col items-center justify-center gap-2 p-4 rounded-2xl bg-card/70 hover:bg-card transition-all duration-300"
         >
-          <div className="h-12 w-12 rounded-full bg-primary/10 flex items-center justify-center">
-            <ListVideo className="h-6 w-6 text-primary" />
+          <div className="h-12 w-12 rounded-full bg-primary/10 flex items-center justify-center shrink-0 flex-[0_0_48px] min-w-12 min-h-12">
+            <div className="h-6 w-6 shrink-0 flex-[0_0_24px] min-w-6 min-h-6">
+              <ListVideo size={24} className="h-full w-full text-primary" />
+            </div>
           </div>
           <span className="text-sm font-medium text-foreground">列表</span>
         </button>
@@ -125,8 +127,13 @@ export function MinePage({ onSelectPlaylist }: MinePageProps) {
           onClick={() => navigate("/local")}
           className="flex-1 flex flex-col items-center justify-center gap-2 p-4 rounded-2xl bg-card/70 hover:bg-card transition-all duration-300"
         >
-          <div className="h-12 w-12 rounded-full bg-primary/10 flex items-center justify-center">
-            <HardDriveDownload className="h-6 w-6 text-primary" />
+          <div className="h-12 w-12 rounded-full bg-primary/10 flex items-center justify-center shrink-0 flex-[0_0_48px] min-w-12 min-h-12">
+            <div className="h-6 w-6 shrink-0 flex-[0_0_24px] min-w-6 min-h-6">
+              <HardDriveDownload
+                size={24}
+                className="h-full w-full text-primary"
+              />
+            </div>
           </div>
           <span className="text-sm font-medium text-foreground">本地</span>
         </button>
@@ -135,8 +142,10 @@ export function MinePage({ onSelectPlaylist }: MinePageProps) {
           onClick={() => navigate("/settings")}
           className="flex-1 flex flex-col items-center justify-center gap-2 p-4 rounded-2xl bg-card/70 hover:bg-card transition-all duration-300"
         >
-          <div className="h-12 w-12 rounded-full bg-primary/10 flex items-center justify-center">
-            <Settings className="h-6 w-6 text-primary" />
+          <div className="h-12 w-12 rounded-full bg-primary/10 flex items-center justify-center shrink-0 flex-[0_0_48px] min-w-12 min-h-12">
+            <div className="h-6 w-6 shrink-0 flex-[0_0_24px] min-w-6 min-h-6">
+              <Settings size={24} className="h-full w-full text-primary" />
+            </div>
           </div>
           <span className="text-sm font-medium text-foreground">设置</span>
         </button>
@@ -197,13 +206,13 @@ export function MinePage({ onSelectPlaylist }: MinePageProps) {
             className="flex items-center gap-3 p-3 rounded-xl bg-primary/5 border border-primary/20 hover:bg-primary/10 transition-colors cursor-pointer"
             onClick={() => onSelectPlaylist("__offline__")}
           >
-            <div className="h-11 w-11 rounded-lg bg-primary/15 flex items-center justify-center shrink-0">
-              <WifiOff className="h-6 w-6 text-primary" />
+            <div className="h-11 w-11 rounded-lg bg-primary/15 flex items-center justify-center shrink-0 flex-[0_0_44px] min-w-11 min-h-11">
+              <WifiOff size={24} className="h-6 w-6 text-primary" />
             </div>
             <div className="flex-1 min-w-0">
               <p className="font-medium text-foreground truncate">离线歌单</p>
               <p className="text-xs text-muted-foreground">
-                {offlineTracks.length} 首可离线播放
+                {offlineTracks.length} 首
               </p>
             </div>
           </div>
@@ -254,7 +263,6 @@ export function MinePage({ onSelectPlaylist }: MinePageProps) {
                       {playlist.name}
                     </p>
                     <p className="text-xs text-muted-foreground">
-                      {/* TODO: 是否简化同步流程, 不再需要is_deleted，仅歌单级别is_deleted, 以最新版本的歌单为主  */}
                       {
                         playlist.tracks.filter(
                           (track) => track.is_deleted !== true

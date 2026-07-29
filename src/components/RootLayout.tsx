@@ -3,24 +3,33 @@ import { MusicLayout } from "@/components/MusicLayout";
 import { MusicNowPlayingBar } from "@/components/MusicNowPlayingBar";
 import { MusicTabBar } from "@/components/MusicTabBar";
 import { GlobalMusicPlayer } from "@/components/GlobalMusicPlayer";
-import { FullScreenPlayer } from "@/components/FullScreenPlayer";
 import { useMusicStore } from "@/store/music-store";
-import toast from "react-hot-toast";
-import { toastUtils } from "@/lib/utils/toast";
-import { useMusicCover } from "@/hooks/useMusicCover";
+import { useShallow } from "zustand/react/shallow";
 import { useExitLayer } from "@/hooks/useExitLayer";
 import { App as CapacitorApp } from "@capacitor/app";
 import { Capacitor } from "@capacitor/core";
-import { useEffect, useCallback, useRef } from "react";
+import { useEffect, useCallback, useRef, lazy, Suspense } from "react";
+
+const FullScreenPlayer = lazy(() =>
+  import("@/components/FullScreenPlayer").then((m) => ({
+    default: m.FullScreenPlayer,
+  }))
+);
 
 const ROOT_TAB_PATHS = ["/", "/search", "/favorites", "/mine"] as const;
 
 export function RootLayout() {
   const location = useLocation();
   const navigate = useNavigate();
-  const { isFullScreenPlayer, setIsFullScreenPlayer: setStoreFullScreen } = useMusicStore();
-  const { handleExit: handleExitLayer, register, unregister } = useExitLayer();
-  
+  const { isFullScreenPlayer, setIsFullScreenPlayer: setStoreFullScreen } =
+    useMusicStore(
+      useShallow((state) => ({
+        isFullScreenPlayer: state.isFullScreenPlayer,
+        setIsFullScreenPlayer: state.setIsFullScreenPlayer,
+      }))
+    );
+  const { handleExit: handleExitLayer, push, pop } = useExitLayer();
+
   // Back Button Logic
   const locationRef = useRef(location);
 
@@ -29,21 +38,14 @@ export function RootLayout() {
   }, [location]);
 
   useEffect(() => {
-    let id: string | undefined;
-    
-    if (isFullScreenPlayer) {
-      id = register({ 
-        close: () => setStoreFullScreen(false), 
-        priority: 100 
-      });
-    }
-    
+    if (!isFullScreenPlayer) return;
+    const id = push({
+      close: () => setStoreFullScreen(false),
+    });
     return () => {
-      if (id) {
-        unregister(id);
-      }
+      pop(id);
     };
-  }, [isFullScreenPlayer, setStoreFullScreen, register, unregister]);
+  }, [isFullScreenPlayer, setStoreFullScreen, push, pop]);
 
   const isRootTabPath = useCallback((path: string) => {
     return ROOT_TAB_PATHS.includes(path as (typeof ROOT_TAB_PATHS)[number]);
@@ -97,61 +99,20 @@ export function RootLayout() {
     return () => window.removeEventListener("keydown", onKeyDown);
   }, [handleExitLayer]);
 
-  const {
-    queue,
-    currentIndex,
-    isPlaying,
-    isLoading,
-    isRepeat,
-    isShuffle,
-    togglePlay,
-    setCurrentIndexAndPlay,
-    toggleRepeat,
-    toggleShuffle,
-    isFavorite,
-    addToFavorites,
-    removeFromFavorites,
-  } = useMusicStore();
-
-  const currentTrack = queue[currentIndex] || null;
-  const coverUrl = useMusicCover(currentTrack);
+  const hasCurrentTrack = useMusicStore(
+    (s) => s.queue.length > 0 && s.currentIndex >= 0
+  );
 
   const isTab = isRootTabPath(location.pathname);
-  
-  // Handlers
-  const handlePrev = () => {
-    if (queue.length === 0) return;
-    setCurrentIndexAndPlay((currentIndex - 1 + queue.length) % queue.length);
-  };
-
-  const handleNext = () => {
-    if (queue.length === 0) return;
-    setCurrentIndexAndPlay((currentIndex + 1) % queue.length);
-  };
-
-  const handleToggleLike = () => {
-    if (!currentTrack) return;
-    if (isFavorite(currentTrack.id)) {
-      removeFromFavorites(currentTrack.id);
-      toast.success("已取消喜欢");
-    } else {
-      const error = addToFavorites(currentTrack);
-      if (error) {
-        toastUtils.info(error);
-      } else {
-        toast.success("已喜欢");
-      }
-    }
-  };
 
   return (
     <>
       <MusicLayout
-        hidePlayer={isFullScreenPlayer || !currentTrack}
+        hidePlayer={isFullScreenPlayer || !hasCurrentTrack}
         isTab={isTab}
         player={
-          <MusicNowPlayingBar 
-            onOpenFullScreen={() => setStoreFullScreen(true)} 
+          <MusicNowPlayingBar
+            onOpenFullScreen={() => setStoreFullScreen(true)}
             isTab={isTab}
           />
         }
@@ -162,23 +123,12 @@ export function RootLayout() {
 
       <GlobalMusicPlayer />
 
-      <FullScreenPlayer
-        isFullScreen={isFullScreenPlayer}
-        onClose={() => setStoreFullScreen(false)}
-        currentTrack={currentTrack}
-        coverUrl={coverUrl}
-        isFavorite={currentTrack ? isFavorite(currentTrack.id) : false}
-        onToggleLike={handleToggleLike}
-        isPlaying={isPlaying}
-        isLoading={isLoading}
-        isRepeat={isRepeat}
-        isShuffle={isShuffle}
-        onTogglePlay={togglePlay}
-        onPrev={handlePrev}
-        onNext={handleNext}
-        onToggleRepeat={toggleRepeat}
-        onToggleShuffle={toggleShuffle}
-      />
+      <Suspense fallback={null}>
+        <FullScreenPlayer
+          isFullScreen={isFullScreenPlayer}
+          onClose={() => setStoreFullScreen(false)}
+        />
+      </Suspense>
     </>
   );
 }

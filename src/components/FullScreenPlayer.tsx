@@ -1,7 +1,7 @@
 "use client";
 
 import { createPortal } from "react-dom";
-import { useState, useEffect, memo, useMemo, useCallback, useRef } from "react";
+import { memo, useMemo } from "react";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 import { LyricsPanel } from "./LyricsPanel";
@@ -20,22 +20,29 @@ import {
   Play,
   Pause,
   SquareArrowOutUpRight,
+  ClockFading,
 } from "lucide-react";
 import { Spinner } from "@/components/ui/spinner";
 import { useMounted } from "@/hooks/use-mounted";
+import { usePlayerActions } from "@/hooks/usePlayerActions";
+import { usePlayerUIState } from "@/hooks/usePlayerUIState";
 import { PlayerQueueDrawer } from "./PlayerQueueDrawer";
 import { MusicTrackMobileMenu } from "./MusicTrackMobileMenu";
 import { AddToPlaylistDrawer } from "./AddToPlaylistDrawer";
+import { QualityDrawer } from "./settings/QualityDrawer";
+import { PlaybackSpeedDrawer } from "./settings/PlaybackSpeedDrawer";
+import { SleepTimerDrawer } from "./settings/SleepTimerDrawer";
 import { downloadMusicTrack } from "@/lib/utils/download";
+import { getQualityShortLabel } from "@/lib/utils/quality";
+import { formatTime } from "@/lib/utils/time";
 import {
   useMusicStore,
   type FullScreenBackgroundMode,
 } from "@/store/music-store";
 import { useShallow } from "zustand/react/shallow";
 import toast from "react-hot-toast";
-import { ColorExtractor } from "react-color-extractor";
-import { pickBestColor } from "@/lib/utils/color";
-import { getCanonicalShareUrl } from "@/lib/share-url";
+import { useCoverColors } from "@/hooks/useCoverColors";
+import { pickBestColor, createBackgroundColor } from "@/lib/utils/color";
 
 interface ModeIconProps {
   isRepeat: boolean;
@@ -131,57 +138,27 @@ BackgroundLayer.displayName = "BackgroundLayer";
 interface FullScreenPlayerProps {
   isFullScreen: boolean;
   onClose: () => void;
-  currentTrack: MusicTrack | null;
-  coverUrl: string | null;
-  isFavorite?: boolean;
-  onToggleLike?: () => void;
-  isPlaying: boolean;
-  isLoading: boolean;
-  isRepeat: boolean;
-  isShuffle: boolean;
-  onTogglePlay: () => void;
-  onPrev: () => void;
-  onNext: () => void;
-  onToggleRepeat: () => void;
-  onToggleShuffle: () => void;
 }
 
 export function FullScreenPlayer({
   isFullScreen,
   onClose,
-  currentTrack,
-  coverUrl,
-  isFavorite = false,
-  onToggleLike,
-  isPlaying,
-  isLoading,
-  isRepeat,
-  isShuffle,
-  onTogglePlay,
-  onPrev,
-  onNext,
-  onToggleRepeat,
-  onToggleShuffle,
 }: FullScreenPlayerProps) {
   const isMounted = useMounted();
-  const [showLyrics, setShowLyrics] = useState(false);
-  const [moreDrawerOpen, setMoreDrawerOpen] = useState(false);
-  const [isAddToPlaylistOpen, setIsAddToPlaylistOpen] = useState(false);
-  const pressTimerRef = useRef<NodeJS.Timeout | null>(null);
-
-  const [colorInfo, setColorInfo] = useState<{
-    coverUrl: string | null;
-    hslColor: [number, number, number] | null;
-  }>({ coverUrl: null, hslColor: null });
-
-  const hslColor = colorInfo.coverUrl === coverUrl ? colorInfo.hslColor : null;
-
-  useEffect(() => {
-    if (!isFullScreen) {
-      const timer = setTimeout(() => setShowLyrics(false), 500);
-      return () => clearTimeout(timer);
-    }
-  }, [isFullScreen]);
+  const {
+    showLyrics,
+    setShowLyrics,
+    moreDrawerOpen,
+    setMoreDrawerOpen,
+    isAddToPlaylistOpen,
+    setIsAddToPlaylistOpen,
+    qualityDrawerOpen,
+    setQualityDrawerOpen,
+    speedDrawerOpen,
+    setSpeedDrawerOpen,
+    sleepDrawerOpen,
+    setSleepDrawerOpen,
+  } = usePlayerUIState(isFullScreen);
 
   const {
     queue,
@@ -194,6 +171,17 @@ export function FullScreenPlayer({
     playTrackAsNext,
     currentAudioUrl,
     fullScreenBackgroundMode,
+    playbackSpeed,
+    sleepTimerIsActive,
+    sleepTimerRemaining,
+    isPlaying,
+    isLoading,
+    isRepeat,
+    isShuffle,
+    togglePlay,
+    toggleRepeat,
+    toggleShuffle,
+    coverUrl,
   } = useMusicStore(
     useShallow((state) => ({
       queue: state.queue,
@@ -206,14 +194,40 @@ export function FullScreenPlayer({
       currentAudioUrl: state.currentAudioUrl,
       quality: state.quality,
       fullScreenBackgroundMode: state.fullScreenBackgroundMode,
+      playbackSpeed: state.playbackSpeed,
+      sleepTimerIsActive: state.sleepTimerIsActive,
+      sleepTimerRemaining: state.sleepTimerRemaining,
+      isPlaying: state.isPlaying,
+      isLoading: state.isLoading,
+      isRepeat: state.isRepeat,
+      isShuffle: state.isShuffle,
+      togglePlay: state.togglePlay,
+      toggleRepeat: state.toggleRepeat,
+      toggleShuffle: state.toggleShuffle,
+      coverUrl: state.coverUrl,
     }))
   );
 
-  const playTrack = (index: number) => setCurrentIndexAndPlay(index);
+  const currentTrack = queue[currentIndex] || null;
 
-  const handleDrawerOpenChange = useCallback((open: boolean) => {
-    setMoreDrawerOpen(open);
-  }, []);
+  const {
+    handleShare,
+    handleToggleLike,
+    isCurrentTrackFavorite,
+    trackInfoPressHandlers,
+  } = usePlayerActions(currentTrack, currentAudioUrl);
+
+  const { swatches } = useCoverColors(
+    coverUrl && fullScreenBackgroundMode === "theme" ? coverUrl : null
+  );
+
+  const hslColor = useMemo(() => {
+    if (!swatches) return null;
+    const dominant = pickBestColor(swatches);
+    return dominant ? createBackgroundColor(dominant) : null;
+  }, [swatches]);
+
+  const playTrack = (index: number) => setCurrentIndexAndPlay(index);
 
   const handleClearQueue = () => {
     if (confirm("确定要清空播放列表吗？")) {
@@ -226,59 +240,25 @@ export function FullScreenPlayer({
     removeFromQueue(track.id);
   };
 
-  const handleShare = async () => {
-    if (!currentTrack) return toast.error("暂无歌曲信息");
-
-    const shareUrl = getCanonicalShareUrl(currentTrack) || currentAudioUrl;
-    if (!shareUrl) return toast.error("该音源暂不支持分享");
-
-    try {
-      await navigator.clipboard.writeText(
-        `【OtterMusic】${currentTrack.name} - ${currentTrack.artist.join(
-          ", "
-        )}\n${shareUrl}`
-      );
-      toast.success("已复制到剪贴板");
-    } catch {
-      toast.error("复制失败，请重试");
-    }
-  };
-
-  /**
-   * 长按复制歌曲信息
-   */
-  const handleTrackInfoPressStart = () => {
-    if (!currentTrack) return;
-
-    pressTimerRef.current = setTimeout(() => {
-      const text = `${currentTrack.name} - ${currentTrack.artist.join(", ")}`;
-      navigator.clipboard
-        .writeText(text)
-        .then(() => {
-          toast.success("已复制歌曲信息");
-        })
-        .catch(() => {
-          toast.error("复制失败，请重试");
-        });
-    }, 500);
-  };
-
-  const handleTrackInfoPressEnd = () => {
-    if (pressTimerRef.current) {
-      clearTimeout(pressTimerRef.current);
-      pressTimerRef.current = null;
-    }
-  };
-
   if (!isMounted) return null;
 
-  const modeTitle = isRepeat ? "单曲循环" : isShuffle ? "随机播放" : "列表循环";
+  // 循环切换播放模式：none → repeat → shuffle → none
   const handleModeToggle = () => {
-    if (!isShuffle && !isRepeat) onToggleRepeat();
+    if (!isShuffle && !isRepeat) toggleRepeat();
     else if (isRepeat) {
-      onToggleRepeat();
-      onToggleShuffle();
-    } else onToggleShuffle();
+      toggleRepeat();
+      toggleShuffle();
+    } else toggleShuffle();
+  };
+
+  const handlePrev = () => {
+    if (queue.length === 0) return;
+    setCurrentIndexAndPlay((currentIndex - 1 + queue.length) % queue.length);
+  };
+
+  const handleNext = () => {
+    if (queue.length === 0) return;
+    setCurrentIndexAndPlay((currentIndex + 1) % queue.length);
   };
 
   return createPortal(
@@ -288,19 +268,6 @@ export function FullScreenPlayer({
         isFullScreen ? "translate-y-0" : "translate-y-full"
       )}
     >
-      {coverUrl && fullScreenBackgroundMode === "theme" && (
-        <div className="hidden">
-          <ColorExtractor
-            src={coverUrl}
-            maxColors={10}
-            getColors={(colors: string[]) =>
-              setColorInfo({ coverUrl, hslColor: pickBestColor(colors) })
-            }
-            onError={() => setColorInfo({ coverUrl, hslColor: null })}
-          />
-        </div>
-      )}
-
       {/* 背景渲染层 */}
       <BackgroundLayer
         hslColor={hslColor}
@@ -308,7 +275,7 @@ export function FullScreenPlayer({
         mode={fullScreenBackgroundMode}
       />
 
-      <header className="shrink-0 flex items-center justify-between px-6 pt-[calc(1rem+env(safe-area-inset-top))] pb-6 relative z-10">
+      <header className="shrink-0 flex items-center justify-between px-6 pt-[calc(1rem+var(--safe-area-top))] pb-6 relative z-10">
         <Button
           variant="ghost"
           size="icon"
@@ -319,9 +286,14 @@ export function FullScreenPlayer({
         >
           <ChevronDown className="h-6 w-6" />
         </Button>
-        <p className="text-xs uppercase tracking-widest text-white/50">
-          {!showLyrics && modeTitle}
-        </p>
+        <Button
+          variant="ghost"
+          size="sm"
+          className="text-xs tracking-widest text-white/50 hover:text-white hover:bg-white/10 h-8 px-3"
+          onClick={() => setQualityDrawerOpen(true)}
+        >
+          {!showLyrics && getQualityShortLabel(quality)}
+        </Button>
         <Button
           variant="ghost"
           size="icon"
@@ -360,7 +332,7 @@ export function FullScreenPlayer({
             <MusicCover
               src={coverUrl}
               alt={currentTrack?.name}
-              className="h-full w-full object-cover dark"
+              className="h-full w-full object-cover dark select-none touch-none"
               iconClassName="h-16 w-16 text-white/30"
             />
           </div>
@@ -371,11 +343,11 @@ export function FullScreenPlayer({
         <div className="flex items-center justify-between">
           <div
             className={cn("min-w-0 flex-1 cursor-pointer select-none")}
-            onMouseDown={handleTrackInfoPressStart}
-            onMouseUp={handleTrackInfoPressEnd}
-            onMouseLeave={handleTrackInfoPressEnd}
-            onTouchStart={handleTrackInfoPressStart}
-            onTouchEnd={handleTrackInfoPressEnd}
+            onMouseDown={trackInfoPressHandlers.onMouseDown}
+            onMouseUp={trackInfoPressHandlers.onMouseUp}
+            onMouseLeave={trackInfoPressHandlers.onMouseLeave}
+            onTouchStart={trackInfoPressHandlers.onTouchStart}
+            onTouchEnd={trackInfoPressHandlers.onTouchEnd}
             title="长按复制歌曲信息"
           >
             <h2 className="truncate text-xl font-semibold text-white">
@@ -392,13 +364,13 @@ export function FullScreenPlayer({
               className="h-10 w-10 text-white/70 hover:bg-white/10 hover:text-white"
               onClick={(e) => {
                 e.stopPropagation();
-                onToggleLike?.();
+                handleToggleLike();
               }}
             >
               <Heart
                 className={cn(
                   "h-6 w-6 transition-all",
-                  isFavorite && "fill-primary text-primary"
+                  isCurrentTrackFavorite && "fill-primary text-primary"
                 )}
               />
             </Button>
@@ -407,16 +379,16 @@ export function FullScreenPlayer({
                 <MusicTrackMobileMenu
                   track={currentTrack}
                   open={moreDrawerOpen}
-                  onOpenChange={handleDrawerOpenChange}
+                  onOpenChange={setMoreDrawerOpen}
                   onAddToPlaylist={() => {
                     setIsAddToPlaylistOpen(true);
                   }}
                   onDownload={() => {
                     downloadMusicTrack(currentTrack, parseInt(quality));
                   }}
-                  isFavorite={isFavorite}
+                  isFavorite={isCurrentTrackFavorite}
                   onToggleLike={() => {
-                    onToggleLike?.();
+                    handleToggleLike();
                   }}
                   triggerClassName="h-10 w-10 text-white/70 hover:bg-white/10 hover:text-white"
                   onNavigate={() => {
@@ -435,10 +407,30 @@ export function FullScreenPlayer({
       </div>
 
       <div className="shrink-0 px-8 relative z-10">
-        <PlayerProgressBar className="relative" />
+        <PlayerProgressBar
+          className="relative"
+          leftTimeSuffix={
+            playbackSpeed !== 1.0 ? (
+              <span className="ml-1 text-[0.7em] align-sub opacity-70">
+                x{playbackSpeed.toFixed(1)}
+              </span>
+            ) : null
+          }
+          centerContent={
+            sleepTimerIsActive ? (
+              <span className="flex items-center gap-1 text-[0.85em]">
+                <ClockFading className="w-2.5 h-2.5" />
+                {formatTime(sleepTimerRemaining)}
+              </span>
+            ) : null
+          }
+          onLeftTimeClick={() => setSpeedDrawerOpen(true)}
+          onRightTimeClick={() => setSleepDrawerOpen(true)}
+          onCenterClick={() => setSleepDrawerOpen(true)}
+        />
       </div>
 
-      <div className="shrink-0 flex items-center justify-between px-8 py-6 pb-[calc(2rem+env(safe-area-inset-bottom))] relative z-10">
+      <div className="shrink-0 flex items-center justify-between px-8 py-6 pb-[calc(2rem+var(--safe-area-bottom))] relative z-10">
         <Button
           variant="ghost"
           size="icon"
@@ -451,18 +443,14 @@ export function FullScreenPlayer({
           variant="ghost"
           size="icon"
           className="h-12 w-12 text-white/70 hover:bg-white/10 hover:text-white"
-          onClick={() => {
-            onPrev();
-          }}
+          onClick={handlePrev}
         >
           <SkipBack className="h-6 w-6 fill-current" />
         </Button>
         <Button
           size="icon"
           className="h-16 w-16 rounded-full bg-white text-black shadow-lg hover:scale-105 transition-all active:scale-95"
-          onClick={() => {
-            onTogglePlay();
-          }}
+          onClick={togglePlay}
           disabled={isLoading}
         >
           {isLoading ? (
@@ -477,9 +465,7 @@ export function FullScreenPlayer({
           variant="ghost"
           size="icon"
           className="h-12 w-12 text-white/70 hover:bg-white/10 hover:text-white"
-          onClick={() => {
-            onNext();
-          }}
+          onClick={handleNext}
         >
           <SkipForward className="h-6 w-6 fill-current" />
         </Button>
@@ -504,6 +490,19 @@ export function FullScreenPlayer({
           }
         />
       </div>
+
+      <QualityDrawer
+        open={qualityDrawerOpen}
+        onOpenChange={setQualityDrawerOpen}
+      />
+      <PlaybackSpeedDrawer
+        open={speedDrawerOpen}
+        onOpenChange={setSpeedDrawerOpen}
+      />
+      <SleepTimerDrawer
+        open={sleepDrawerOpen}
+        onOpenChange={setSleepDrawerOpen}
+      />
     </div>,
     document.body
   );

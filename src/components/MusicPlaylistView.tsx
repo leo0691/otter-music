@@ -1,5 +1,6 @@
 import { Button } from "@/components/ui/button";
 import { Play, Search } from "lucide-react";
+import { filterTracks } from "@/lib/utils/filter-tracks";
 import { MusicTrackList } from "./MusicTrackList";
 import { Input } from "@/components/ui/input";
 import { useState, useMemo, useRef } from "react";
@@ -13,6 +14,7 @@ import { useDownloadStore } from "@/store/download-store";
 import { buildDownloadKey } from "@/lib/utils/download";
 import toast from "react-hot-toast";
 import { createTrackFromUrl, deduplicateTracks } from "@/lib/utils/music";
+import { sortTracks, TrackSortKey } from "@/lib/utils/sort-tracks";
 import { toastUtils } from "@/lib/utils/toast";
 import { exportPlaylist } from "@/lib/utils/playlist-backup";
 import { musicApi } from "@/lib/music-api";
@@ -96,16 +98,16 @@ export function MusicPlaylistView({
     }
   };
 
-  const filteredTracks = useMemo(() => {
-    if (!searchQuery.trim()) return tracks;
-    const lower = searchQuery.toLowerCase();
-    return tracks.filter(
-      (t) =>
-        t.name.toLowerCase().includes(lower) ||
-        t.artist?.some((a) => a?.toLowerCase().includes(lower)) ||
-        t.album?.toLowerCase().includes(lower)
-    );
-  }, [tracks, searchQuery]);
+  const handleSort = (key: TrackSortKey) => {
+    if (!playlistId || !isPersonalPlaylist) return;
+    const sorted = sortTracks(tracks, key);
+    useMusicStore.getState().reorderPlaylistTracks(playlistId, sorted);
+  };
+
+  const filteredTracks = useMemo(
+    () => filterTracks(tracks, searchQuery),
+    [tracks, searchQuery]
+  );
 
   const handleDeduplicate = () => {
     if (!playlistId) return;
@@ -272,16 +274,17 @@ export function MusicPlaylistView({
                 onAddByUrl={
                   isPersonalPlaylist ? () => setIsAddByUrlOpen(true) : undefined
                 }
+                onSort={isPersonalPlaylist ? handleSort : undefined}
               />
             )}
 
-            <div className="relative ml-auto w-32">
-              <Search className="absolute left-2 top-2.5 h-3 w-3 text-muted-foreground" />
+            <div className="relative ml-auto w-32 md:w-48">
+              <Search className="absolute left-2 top-2.5 h-3 w-3 text-muted-foreground md:h-4 md:w-4 md:top-2" />
               <Input
                 placeholder="搜索..."
                 value={searchQuery}
                 onChange={(e) => setSearchQuery(e.target.value)}
-                className="pl-8 h-8 text-xs"
+                className="pl-8 h-8 text-xs md:w-48 md:h-9 md:text-sm"
               />
             </div>
           </div>

@@ -136,6 +136,7 @@ export interface MiguSongRaw {
   albumImgs?: Array<{ img?: string; imgSizeType?: string }>;
   artists?: Array<{ id?: string; name?: string }>;
   lrcUrl?: string;
+  copyright?: number | string;
 }
 
 export interface MiguSongUrlResponse {
@@ -421,10 +422,98 @@ export interface MiguV3SearchSongRaw {
   albumId?: number | string;
   album?: string;
   img1?: string;
+  img2?: string;
+  img3?: string;
   ext?: {
     lrcUrl?: string;
     trcUrl?: string;
   };
   toneControl?: string;
   copyright?: number;
+}
+
+// ============================================================
+// QQ 音乐
+// ============================================================
+
+export interface QqPlaylistResponse {
+  code: number;
+  subcode?: number;
+  msg?: string;
+  cdlist: QqCdItem[];
+}
+
+export interface QqCdItem {
+  dissid: string;
+  dissname: string;
+  logo: string;
+  songnum: number;
+  songlist: QqSongRaw[];
+}
+
+export interface QqSongRaw {
+  songid: string;
+  songmid: string;
+  songname: string;
+  singer: QqSingerRaw[];
+  albumname: string;
+  albummid: string;
+  interval: number;
+  pay?: {
+    payplay?: number;
+    paydownload?: number;
+    pay_play?: number;
+    pay_down?: number;
+  };
+}
+
+export interface QqSingerRaw {
+  name: string;
+}
+
+export interface QqPlaylistDetail {
+  name: string;
+  coverUrl: string;
+  trackCount: number;
+  songs: QqSongRaw[];
+}
+
+export interface QqSearchSongRaw {
+  id?: string;
+  mid?: string;
+  songid?: string;
+  songmid?: string;
+  title?: string;
+  songname?: string;
+  singer: QqSingerRaw[];
+  album?: { id?: string; mid?: string; title?: string };
+  albumid?: string;
+  albummid?: string;
+  albumname?: string;
+  pay?: {
+    payplay?: number;
+    paydownload?: number;
+    pay_play?: number;
+    pay_down?: number;
+  };
+}
+
+export interface QqSearchResponse {
+  req_1: {
+    code: number;
+    data: {
+      meta: { sum: number };
+      body: { song: { list: QqSearchSongRaw[] } };
+    };
+  };
+}
+
+export interface QqVkeyResponse {
+  req_1: {
+    code: number;
+    data: {
+      sip: string[];
+      midurlinfo: { purl: string; filename: string }[];
+    };
+  };
 }

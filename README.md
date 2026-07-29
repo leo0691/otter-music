@@ -1,11 +1,9 @@
 # Otter Music
 
-[网页端](https://github.com/DJChanahCJD/otter-music-web)
-
 <p align="center">
   <img width="100" alt="Otter Music icon" src="public/favicon.svg">
 </p>
-<p align="center"><strong>Stream your music like an otter</strong></p>
+<p align="center"><strong>水獭音乐</strong></p>
 
 <p align="center">
   基于 <a href="https://music-api.gdstudio.xyz/api.php">GD Studio's API</a> 的多音源聚合音乐播放器
@@ -31,7 +29,7 @@
 - **歌单广场与播客**：支持网易云歌单、我的歌单，以及本地 RSS 播客入口。
 - **歌单管理增强**：支持搜索、去重、导出、封面设置、URL 添加歌曲，支持主流音乐平台的歌单导入。
 - **下载管理**: 支持选择下载音质、下载目录、是否嵌入歌词或封面
-- **播放生态**：支持播放列表、最近播放、个人歌单、歌词显示、主题切换与数据同步配置。
+- **播放生态**：支持播放列表、最近播放、个人歌单、歌词显示、音质选择、倍速调节、睡眠定时、主题切换与数据同步配置。
 - **移动端体验完整**：支持 PWA 安装、Android 打包与 Media Session 集成，网页端也能接近原生体验。
 
 > 数据同步功能：通过管理员手动分配的 `SYNC_KEY` 接入。存储基于 Cloudflare KV（上限 25 MB），单用户理论可稳定同步 5 万首歌曲
@@ -40,23 +38,25 @@
 
 | 音源             | 搜索 | 播放 | 歌词 | 歌单导入 | 备注                               |
 | ---------------- | :--: | :--: | :--: | :------: | ---------------------------------- |
-| 网易云音乐       |  ✅  |  ✅  |  ✅  |    ✅    | GD Studio API                      |
+| 网易云音乐🌟     |  ✅  |  ✅  |  ✅  |    ✅    | GD Studio API                      |
 | Netease          |  ✅  |  ✅  |  ✅  |    ✅    | 网易云官方，搜索建议/专辑/歌手详情 |
-| Joox             |  ✅  |  ✅  |  ✅  |    ❌    | GD Studio API                      |
+| Joox🌟           |  ✅  |  ✅  |  ✅  |    ❌    | GD Studio API                      |
+| B站🌟            |  ✅  |  ✅  |  ❌  |    ❌    | 仅移动端，支持视频分P/合集         |
 | 酷我音乐         |  ✅  |  ✅  |  ✅  |    ✅    | GD Studio API                      |
 | 咪咕音乐         |  ✅  |  ✅  |  ✅  |    ✅    | 仅移动端                           |
-| B站              |  ✅  |  ✅  |  ❌  |    ❌    | 仅移动端                           |
-| QQ音乐           |  ❌  |  ❌  |  ❌  |    ✅    |                                    |
+| QQ音乐           |  ✅  |  ✅  |  ✅  |    ✅    | QQ音乐官方                         |
 | 酷狗音乐         |  ❌  |  ❌  |  ❌  |    ✅    |                                    |
+| 小蜗音乐         |  ✅  |  ✅  |  ✅  |    ❌    | 酷我音源（洛雪），URL 走 LX API    |
+| 小秋音乐         |  ✅  |  ✅  |  ✅  |    ❌    | QQ音源（洛雪），URL 走 LX API      |
 | 本地音乐         |  ❌  |  ✅  |  ✅  |    ❌    | 仅移动端支持                       |
 | 播客（歌单广场） |  ✅  |  ✅  |  ❌  |    ❌    | RSS 播客订阅                       |
 
-> **聚合搜索**：选择"聚合搜索"时，默认并行搜索网易云、Joox 两个音源，智能去重后按音质排序。可在设置中开启更多音源。
-
 > [!NOTE]
+> **兼容性说明**
+>
 > 最低支持版本：minSdkVersion = 24 (Android 7.0)
 >
-> Android 13（API 33）以下设备可能存在部分 CSS 样式兼容问题，建议升级系统。
+> 若出现界面排版错乱、图标异常等问题，请先更新 Android System WebView 至较新版本（建议 WebView 100+ 的版本）。
 
 > [!IMPORTANT]
 > 在线体验：[Otter Music](https://otter-music.pages.dev/)
@@ -154,29 +154,33 @@ shared/                     # 跨端共享类型
 
 ## TODO
 
-- [ ] 评估是否学习 musicfree 那种插件化机制(CommonJS + 沙箱 VM)
-- [ ] 优化倍速播放和睡眠定时
-
-### Low Priority
-
-- [ ] 适配平板端，优化移动端体验
-- [ ] UI 重构（极简高效，打开即听）
-- [ ] 是否引入 GSAP 动画库
-- [ ] 私人 DJ 功能，参考 Claudio 实现，可以根据喜欢、播放历史、你当地的时间、天气来给你推荐歌曲（taste.md, ELEVENLABS 播报）
+...
 
 ### Not TODO
 
 - 不接入 JOOX、KUWO 等官方接口：当前网易云官方接口够用，无需增加复杂度；接入 JOOX 还需要做代理
-- 不实现音效选择：Web 端限制多，且收益低。
+- 不接入 musicfree/洛雪 的插件生态（可以手动维护其音源）
+- 不做网易云「每日推荐」（已有「私人雷达」）
+- 不做 B 站 UP 主歌手页（风控校验容易失败）
+- 不做视频 MV 模式（避免臃肿，专注于听歌）
+- 不做自定义缓存功能（开关、歌曲缓存最大占用/个数、缓存过期时间），因为难以控制 Web View 默认的 Disk Cache
+- 不实现音效选择：Web 端限制多，且收益低
 
 ## 参考资料
 
 - [GD Studio](https://music-api.gdstudio.xyz/api.php)：免费音源 API 服务支持
-- [Listen1](https://github.com/listen1/listen1_chrome_extension/blob/master/js/provider/netease.js)：网易云接口实现参考
+- [洛雪音乐音源](https://github.com/Huibq/keep-alive)
+- [Listen1](https://github.com/listen1/listen1_chrome_extension/blob/master/js/provider)：网易云/咪咕/B站官方接口实现参考
 
 ## 🤝 贡献
 
 欢迎提交 Issue 或 Pull Request！
+
+## 免责声明
+
+本项目不存储任何音频资源，接口均来自互联网公开资料，仅供技术交流。
+
+严禁商业用途，由此产生的版权风险由使用者自行承担。
 
 ## License
 

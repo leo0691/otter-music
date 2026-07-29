@@ -16,6 +16,7 @@ import { ScrollArea } from "@/components/ui/scroll-area";
 import { useMusicCover } from "@/hooks/useMusicCover";
 import { cn } from "@/lib/utils";
 import { useHistoryStore } from "@/store/history-store";
+import { useMusicStore } from "@/store/music-store";
 import type { MusicTrack } from "@/types/music";
 
 interface PlayerQueueDrawerProps {
@@ -236,6 +237,7 @@ export function PlayerQueueDrawer({
                 className="h-9 w-9 text-muted-foreground/70 hover:bg-muted hover:text-foreground transition-colors"
                 onClick={() => {
                   setOpen(false);
+                  useMusicStore.getState().setIsFullScreenPlayer(false);
                   navigate(activeTab === "queue" ? "/queue" : "/history");
                 }}
                 title={activeTab === "queue" ? "展开播放列表" : "展开历史记录"}
@@ -265,7 +267,7 @@ export function PlayerQueueDrawer({
 
         <div className="min-h-0 flex-1">
           <ScrollArea className="h-full" viewportRef={viewportRef}>
-            <div className="px-4 pb-[calc(2rem+env(safe-area-inset-bottom))] flex flex-col gap-1">
+            <div className="px-4 pb-[calc(2rem+var(--safe-area-bottom))] flex flex-col gap-1">
               {activeTab === "queue"
                 ? queue.map((track, i) => (
                     <QueueTrackItem

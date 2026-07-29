@@ -1,5 +1,3 @@
-import { useMusicStore } from "@/store/music-store";
-import { Switch } from "@/components/ui/switch";
 import { Button } from "@/components/ui/button";
 import { SettingItem } from "./SettingItem";
 import { HardDrive, Trash2 } from "lucide-react";
@@ -14,13 +12,11 @@ import { toastUtils } from "@/lib/utils/toast";
 import { useOfflineStore } from "@/store/offline-store";
 
 export function StreamCacheSetting() {
-  const { enableStreamCache, setEnableStreamCache } = useMusicStore();
   const [expanded, setExpanded] = useState(false);
   const [stats, setStats] = useState({ entryCount: 0, approxSize: 0 });
 
   useEffect(() => {
     if (expanded) {
-      // opaque response 无法直接获取缓存大小，仅统计条目数
       Promise.all([getAudioCacheStats(), getStorageUsage()]).then(
         ([s, usage]) => {
           setStats({ entryCount: s.entryCount, approxSize: usage });
@@ -33,13 +29,7 @@ export function StreamCacheSetting() {
     <SettingItem
       icon={HardDrive}
       title="边听边缓存"
-      subtitle={enableStreamCache ? "播放时自动缓存，离线也能听" : "缓存已关闭"}
-      action={
-        <Switch
-          checked={enableStreamCache}
-          onCheckedChange={setEnableStreamCache}
-        />
-      }
+      subtitle="播放时自动缓存，离线也能听"
       onClick={() => setExpanded(!expanded)}
       showChevron
       isExpanded={expanded}

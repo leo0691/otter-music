@@ -3,9 +3,11 @@ import { useParams, useNavigate } from "react-router-dom";
 import { useMusicStore } from "@/store/music-store";
 import { useHistoryStore } from "@/store/history-store";
 import { usePlayHelper } from "@/hooks/usePlayHelper";
+import { usePlayContextHandler } from "@/hooks/usePlayContextHandler";
 import { PageLoader } from "@/components/PageLoader";
 import { PageLayout } from "@/components/PageLayout";
-import { ListMusic } from "lucide-react";
+import { MusicPlaylistView } from "@/components/MusicPlaylistView";
+import { ListMusic, WifiOff } from "lucide-react";
 import { useActivePlaylists } from "@/hooks/use-active-playlists";
 import { useOfflinePlaylist } from "@/hooks/use-offline-playlist";
 
@@ -15,11 +17,6 @@ import { useOfflinePlaylist } from "@/hooks/use-offline-playlist";
 const MusicSearchView = lazy(() =>
   import("@/components/MusicSearchView").then((m) => ({
     default: m.MusicSearchView,
-  }))
-);
-const MusicPlaylistView = lazy(() =>
-  import("@/components/MusicPlaylistView").then((m) => ({
-    default: m.MusicPlaylistView,
   }))
 );
 const FavoritesView = lazy(() =>
@@ -73,7 +70,8 @@ const BilibiliCollectionDetail = lazy(() =>
 function usePlaybackState() {
   const currentTrackId = useMusicStore((s) => s.queue[s.currentIndex]?.id);
   const isPlaying = useMusicStore((s) => s.isPlaying);
-  return { currentTrackId, isPlaying };
+  const isShuffle = useMusicStore((s) => s.isShuffle);
+  return { currentTrackId, isPlaying, isShuffle };
 }
 
 /** 消除 Suspense 模板代码的高阶组件 */
@@ -107,6 +105,7 @@ export const SearchRoute = withSuspense(() => {
 export const FavoritesRoute = withSuspense(() => {
   const favorites = useMusicStore((s) => s.favorites);
   const activeFavorites = favorites.filter((t) => !t.is_deleted);
+  const onPlay = usePlayContextHandler(activeFavorites, "favorites");
   const { currentTrackId, isPlaying } = usePlaybackState();
 
   return (
@@ -114,13 +113,7 @@ export const FavoritesRoute = withSuspense(() => {
       tracks={activeFavorites}
       currentTrackId={currentTrackId}
       isPlaying={isPlaying}
-      onPlay={(track, index) => {
-        const store = useMusicStore.getState();
-        if (track && currentTrackId === track.id) return store.togglePlay();
-        const idx =
-          index ?? activeFavorites.findIndex((t) => t.id === track?.id);
-        store.playContext(activeFavorites, Math.max(0, idx), "favorites");
-      }}
+      onPlay={onPlay}
       onReorder={(newOrder) =>
         useMusicStore.getState().reorderFavorites(newOrder)
       }
@@ -134,10 +127,15 @@ export const PlaylistDetailRoute = withSuspense(() => {
   const offlineTracks = useOfflinePlaylist();
   const isOffline = id === "__offline__";
 
-  // 精确查找特定歌单
   const activePlaylists = useActivePlaylists();
   const playlist = isOffline ? null : activePlaylists.find((p) => p.id === id);
+  const activeTracks = playlist?.tracks.filter((t) => !t.is_deleted) ?? [];
   const { currentTrackId, isPlaying } = usePlaybackState();
+
+  const onPlay = usePlayContextHandler(
+    isOffline ? offlineTracks : activeTracks,
+    isOffline ? "offline" : `playlist-${id}`
+  );
 
   if (isOffline) {
     return (
@@ -145,14 +143,8 @@ export const PlaylistDetailRoute = withSuspense(() => {
         <MusicPlaylistView
           title="离线歌单"
           tracks={offlineTracks}
-          icon={<ListMusic className="h-8 w-8 text-primary/80" />}
-          onPlay={(track, index) => {
-            const store = useMusicStore.getState();
-            if (track && currentTrackId === track.id) return store.togglePlay();
-            const idx =
-              index ?? offlineTracks.findIndex((t) => t.id === track?.id);
-            store.playContext(offlineTracks, Math.max(0, idx), "offline");
-          }}
+          icon={<WifiOff className="h-8 w-8 text-primary/80" />}
+          onPlay={onPlay}
           currentTrackId={currentTrackId}
           isPlaying={isPlaying}
         />
@@ -166,8 +158,6 @@ export const PlaylistDetailRoute = withSuspense(() => {
     );
   }
 
-  const activeTracks = playlist.tracks.filter((t) => !t.is_deleted);
-
   return (
     <PageLayout title={playlist.name}>
       <MusicPlaylistView
@@ -178,13 +168,7 @@ export const PlaylistDetailRoute = withSuspense(() => {
         tracks={activeTracks}
         playlistId={id}
         icon={<ListMusic className="h-8 w-8 text-primary/80" />}
-        onPlay={(track, index) => {
-          const store = useMusicStore.getState();
-          if (track && currentTrackId === track.id) return store.togglePlay();
-          const idx =
-            index ?? activeTracks.findIndex((t) => t.id === track?.id);
-          store.playContext(activeTracks, Math.max(0, idx), `playlist-${id}`);
-        }}
+        onPlay={onPlay}
         onRemove={(t) => useMusicStore.getState().removeFromPlaylist(id!, t.id)}
         onBatchRemove={(tracks) =>
           useMusicStore.getState().removeBatchFromPlaylist(
@@ -257,6 +241,7 @@ export const AlbumDetailRoute = createNeteaseRoute("album", "album");
 
 export const QueueRoute = withSuspense(() => {
   const queue = useMusicStore((s) => s.queue);
+  const onPlay = usePlayContextHandler(queue, "queue");
   const { currentTrackId, isPlaying } = usePlaybackState();
 
   return (
@@ -264,12 +249,7 @@ export const QueueRoute = withSuspense(() => {
       queue={queue}
       currentTrackId={currentTrackId}
       isPlaying={isPlaying}
-      onPlay={(track, index) => {
-        const store = useMusicStore.getState();
-        if (track && currentTrackId === track.id) return store.togglePlay();
-        const idx = index ?? queue.findIndex((t) => t.id === track?.id);
-        store.playContext(queue, Math.max(0, idx), "queue");
-      }}
+      onPlay={onPlay}
       onRemove={(track) => useMusicStore.getState().removeFromQueue(track.id)}
       onClear={() => useMusicStore.getState().clearQueue()}
     />
@@ -278,6 +258,7 @@ export const QueueRoute = withSuspense(() => {
 
 export const HistoryRoute = withSuspense(() => {
   const history = useHistoryStore((s) => s.history);
+  const onPlay = usePlayContextHandler(history, "history");
   const { currentTrackId, isPlaying } = usePlaybackState();
 
   return (
@@ -285,12 +266,7 @@ export const HistoryRoute = withSuspense(() => {
       history={history}
       currentTrackId={currentTrackId}
       isPlaying={isPlaying}
-      onPlay={(track, index) => {
-        const store = useMusicStore.getState();
-        if (track && currentTrackId === track.id) return store.togglePlay();
-        const idx = index ?? history.findIndex((t) => t.id === track?.id);
-        store.playContext(history, Math.max(0, idx), "history");
-      }}
+      onPlay={onPlay}
       onRemove={(track) =>
         useHistoryStore.getState().removeFromHistory(track.id)
       }

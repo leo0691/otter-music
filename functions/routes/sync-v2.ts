@@ -13,7 +13,12 @@ import { SYNC_KEY_PREFIX, SyncKeyMetadata } from "@otter-music/shared";
 type Variables = { syncKey: string; kvKey: string };
 export const syncRoutesV2 = new Hono<{ Bindings: Env; Variables: Variables }>();
 
-type SyncRecord = { id: string; update_time: number; is_deleted: boolean; [k: string]: any };
+type SyncRecord = {
+  id: string;
+  update_time: number;
+  is_deleted: boolean;
+  [k: string]: any;
+};
 type SyncPlaylist = SyncRecord & { tracks: SyncRecord[] };
 
 const TOMBSTONE_TTL_MS = 7 * 24 * 60 * 60 * 1000; // 墓碑保留 7 天
@@ -23,7 +28,10 @@ const MAGIC_RAW = 0x00; // 小于 COMPRESS_THRESHOLD，直接存 JSON 的二进�
 const MAGIC_DEFLATE = 0x7a; // 0x7a = 122 = 'z'
 
 const toArrayBuffer = (input: Uint8Array): ArrayBuffer =>
-  input.buffer.slice(input.byteOffset, input.byteOffset + input.byteLength) as ArrayBuffer;
+  input.buffer.slice(
+    input.byteOffset,
+    input.byteOffset + input.byteLength
+  ) as ArrayBuffer;
 
 // ================================================================
 // KV 序列化：写入格式 = [1字节魔术头 | payload]
@@ -102,7 +110,9 @@ const formatData = (v: any) => ({
 // 清理超过 TTL 的墓碑记录
 const gcData = (data: ReturnType<typeof formatData>, now: number) => {
   const gc = <T extends SyncRecord>(list: T[]) =>
-    list.filter((r) => !(r.is_deleted && now - r.update_time > TOMBSTONE_TTL_MS));
+    list.filter(
+      (r) => !(r.is_deleted && now - r.update_time > TOMBSTONE_TTL_MS)
+    );
   return {
     ...data,
     favorites: gc(data.favorites),
@@ -110,7 +120,9 @@ const gcData = (data: ReturnType<typeof formatData>, now: number) => {
   };
 };
 
-// Last-Write-Wins 合并：相同 id 保留 update_time 更大的版本；新增条目追加到头部
+// Last-Write-Wins 合并：
+// - 相同 id 的条目，保留 update_time 更大的版本（相同时用 client 覆盖 server）
+// - server 独有的条目追加在后，client 独有的条目排在前
 function mergeLWW<T extends SyncRecord>(server: T[], client: T[]): T[] {
   const map = new Map<string, T>(server.map((item) => [item.id, item]));
   for (const c of client) {
@@ -145,7 +157,7 @@ const getFingerprint = (d: ReturnType<typeof formatData>): string => {
 const generateKey = (prefix?: string) => {
   const code = Array.from(
     crypto.getRandomValues(new Uint8Array(16)),
-    (b) => ALPHABET[b % ALPHABET.length],
+    (b) => ALPHABET[b % ALPHABET.length]
   ).join("");
   return prefix ? `${prefix}_${code}` : code;
 };
@@ -156,7 +168,8 @@ const generateKey = (prefix?: string) => {
 
 // Bearer Token 中间件（跳过管理端路径）
 syncRoutesV2.use("/*", async (c, next) => {
-  if (c.req.path.includes("/keys") || c.req.path.includes("/create-key")) return next();
+  if (c.req.path.includes("/keys") || c.req.path.includes("/create-key"))
+    return next();
 
   const token = c.req.header("Authorization")?.match(/^Bearer\s+(\S+)$/)?.[1];
   if (!token) return fail(c, "Invalid Authorization", 401);
@@ -168,18 +181,26 @@ syncRoutesV2.use("/*", async (c, next) => {
 
 // GET /check — 检查 syncKey 是否存在及上次同步时间
 syncRoutesV2.get("/check", async (c) => {
-  const { metadata } = await c.env.oh_file_url.getWithMetadata<SyncKeyMetadata>(c.get("kvKey"));
+  const { metadata } = await c.env.oh_file_url.getWithMetadata<SyncKeyMetadata>(
+    c.get("kvKey")
+  );
   return metadata === null
     ? fail(c, "Sync key not found", 404)
-    : ok(c, { lastSyncTime: metadata.lastSyncTime || 0 });
+    : ok(c, {
+        lastSyncTime: metadata.lastSyncTime || 0,
+        version: metadata.version ?? 0,
+      });
 });
 
 // GET /pull — 拉取数据（自动 GC 墓碑，有变化时异步写回）
 syncRoutesV2.get("/pull", async (c) => {
   const kv = c.env.oh_file_url;
-  const { value, metadata } = await kv.getWithMetadata<SyncKeyMetadata>(c.get("kvKey"), {
-    type: "arrayBuffer",
-  });
+  const { value, metadata } = await kv.getWithMetadata<SyncKeyMetadata>(
+    c.get("kvKey"),
+    {
+      type: "arrayBuffer",
+    }
+  );
   if (value === null) return fail(c, "Sync key not found", 404);
 
   const raw = formatData(await deserializeFromKV(value));
@@ -191,27 +212,47 @@ syncRoutesV2.get("/pull", async (c) => {
     c.executionCtx.waitUntil(
       serializeForKV(data).then((buf) =>
         kv.put(c.get("kvKey"), buf, {
-          metadata: { lastSyncTime: metadata?.lastSyncTime || 0 } satisfies SyncKeyMetadata,
-        }),
-      ),
+          metadata: {
+            lastSyncTime: metadata?.lastSyncTime || 0,
+            sizeBytes: buf.byteLength,
+            version: metadata?.version ?? 0,
+          } satisfies SyncKeyMetadata,
+        })
+      )
     );
   }
 
-  return ok(c, { data, lastSyncTime: metadata?.lastSyncTime || 0 });
+  return ok(c, {
+    data,
+    lastSyncTime: metadata?.lastSyncTime || 0,
+    version: metadata?.version ?? 0,
+  });
 });
 
-// POST / — 推送并合并（LWW），返回合并结果
+// POST / — 推送并合并（LWW + 乐观锁），返回合并结果
 syncRoutesV2.post(
   "/",
-  zValidator("json", z.object({ data: z.any() })),
+  zValidator(
+    "json",
+    z.object({ data: z.any(), clientVersion: z.number().optional() })
+  ),
   async (c) => {
     const kv = c.env.oh_file_url;
     const kvKey = c.get("kvKey");
-    const stored = await kv.get(kvKey, "arrayBuffer");
+    const { value: stored, metadata } =
+      await kv.getWithMetadata<SyncKeyMetadata>(kvKey, { type: "arrayBuffer" });
     if (stored === null) return fail(c, "Sync key not found", 404);
 
-    const { data: clientData } = c.req.valid("json");
+    const { data: clientData, clientVersion } = c.req.valid("json");
     const now = Date.now();
+
+    // 乐观锁：客户端已知版本与服务端当前版本不匹配时拒绝写入
+    if (
+      clientVersion !== undefined &&
+      clientVersion !== (metadata?.version ?? 0)
+    ) {
+      return fail(c, "Version conflict", 409);
+    }
 
     const serverData = gcData(formatData(await deserializeFromKV(stored)), now);
     const client = gcData(formatData(clientData), now);
@@ -222,12 +263,22 @@ syncRoutesV2.post(
       playlists: mergeLWW(serverData.playlists, client.playlists),
     };
 
-    await kv.put(kvKey, await serializeForKV(merged), {
-      metadata: { lastSyncTime: now } satisfies SyncKeyMetadata,
+    const newVersion = (metadata?.version ?? 0) + 1;
+    const serialized = await serializeForKV(merged);
+    await kv.put(kvKey, serialized, {
+      metadata: {
+        lastSyncTime: now,
+        sizeBytes: serialized.byteLength,
+        version: newVersion,
+      } satisfies SyncKeyMetadata,
     });
 
-    return ok(c, { data: merged, lastSyncTime: now }, "Sync successful");
-  },
+    return ok(
+      c,
+      { data: merged, lastSyncTime: now, version: newVersion },
+      "Sync successful"
+    );
+  }
 );
 
 // ---- 管理端（需 Cookie 认证）----
@@ -238,7 +289,13 @@ syncRoutesV2.post(
   authMiddleware,
   zValidator(
     "json",
-    z.object({ prefix: z.string().regex(/^[a-z0-9_-]+$/i).max(20).optional() }),
+    z.object({
+      prefix: z
+        .string()
+        .regex(/^[a-z0-9_-]+$/i)
+        .max(20)
+        .optional(),
+    })
   ),
   async (c) => {
     const kv = c.env.oh_file_url;
@@ -247,18 +304,20 @@ syncRoutesV2.post(
       const syncKey = generateKey(prefix);
       const kvKey = `${SYNC_KEY_PREFIX}${syncKey}`;
       if (!(await kv.get(kvKey, "arrayBuffer"))) {
-        await kv.put(kvKey, new ArrayBuffer(0), { metadata: { lastSyncTime: 0 } });
+        await kv.put(kvKey, new ArrayBuffer(0), {
+          metadata: { lastSyncTime: 0, sizeBytes: 0, version: 0 },
+        });
         return ok(c, { syncKey }, "Sync key created");
       }
     }
     return fail(c, "Failed to generate unique key", 500);
-  },
+  }
 );
 
 // GET /keys — 列出所有 syncKey
 syncRoutesV2.get("/keys", authMiddleware, async (c) => {
   const kv = c.env.oh_file_url;
-  const keys: { key: string; lastSyncTime: number }[] = [];
+  const keys: { key: string; lastSyncTime: number; sizeBytes?: number }[] = [];
   let cursor: string | undefined;
 
   do {
@@ -267,7 +326,8 @@ syncRoutesV2.get("/keys", authMiddleware, async (c) => {
       ...result.keys.map((k: { name: string; metadata: unknown }) => ({
         key: k.name.replace(SYNC_KEY_PREFIX, ""),
         lastSyncTime: (k.metadata as SyncKeyMetadata)?.lastSyncTime || 0,
-      })),
+        sizeBytes: (k.metadata as SyncKeyMetadata)?.sizeBytes,
+      }))
     );
     cursor = result.list_complete ? undefined : result.cursor;
   } while (cursor);

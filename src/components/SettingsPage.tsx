@@ -12,8 +12,18 @@ import {
   useMusicStore,
   type FullScreenBackgroundMode,
 } from "@/store/music-store";
+import { useShallow } from "zustand/react/shallow";
 import { Slider } from "./ui/slider";
-import { Image, Palette, Volume2, Wand2, Trash2, Tag } from "lucide-react";
+import {
+  Image,
+  Palette,
+  Volume2,
+  Wand2,
+  Trash2,
+  Tag,
+  Database,
+  Shield,
+} from "lucide-react";
 import { Switch } from "./ui/switch";
 import {
   Select,
@@ -22,15 +32,17 @@ import {
   SelectTrigger,
   SelectValue,
 } from "./ui/select";
-import { DownloadQualitySelect } from "./settings/DownloadQualitySelect";
-import { DownloadSettingToggles } from "./settings/DownloadSettingToggles";
-import { DownloadDirectorySelect } from "./settings/DownloadDirectorySelect";
+import { DownloadSetting } from "./settings/DownloadSetting";
 import { SettingItem } from "./settings/SettingItem";
 import { UpdateCheck } from "./settings/UpdateCheck";
 import { IssueLogs } from "./settings/IssueLogs";
 import { StreamCacheSetting } from "./settings/StreamCacheSetting";
 import { SleepTimerSetting } from "./settings/SleepTimerSetting";
 import { PlaybackSpeedSetting } from "./settings/PlaybackSpeedSetting";
+import { AutoMatchSuffixSetting } from "./settings/AutoMatchSuffixSetting";
+import { AutoMatchSetting } from "./settings/AutoMatchSetting";
+import { DataBackup } from "./settings/DataBackup";
+import { useState } from "react";
 
 interface SettingsPageProps {
   onBack?: () => void;
@@ -55,32 +67,39 @@ function SettingsSection({
 
 export function SettingsPage({ onBack }: SettingsPageProps) {
   const navigate = useNavigate();
+  const [dataBackupOpen, setDataBackupOpen] = useState(false);
   const {
     volume,
     setVolume,
     enableAutoMatch,
-    setEnableAutoMatch,
+    enableProxyFallback,
+    setEnableProxyFallback,
+    bilibiliKeepOriginalMeta,
+    setBilibiliKeepOriginalMeta,
     showSourceBadge,
     setShowSourceBadge,
     fullScreenBackgroundMode,
     setFullScreenBackgroundMode,
-  } = useMusicStore();
+  } = useMusicStore(
+    useShallow((state) => ({
+      volume: state.volume,
+      setVolume: state.setVolume,
+      enableAutoMatch: state.enableAutoMatch,
+      enableProxyFallback: state.enableProxyFallback,
+      setEnableProxyFallback: state.setEnableProxyFallback,
+      bilibiliKeepOriginalMeta: state.bilibiliKeepOriginalMeta,
+      setBilibiliKeepOriginalMeta: state.setBilibiliKeepOriginalMeta,
+      showSourceBadge: state.showSourceBadge,
+      setShowSourceBadge: state.setShowSourceBadge,
+      fullScreenBackgroundMode: state.fullScreenBackgroundMode,
+      setFullScreenBackgroundMode: state.setFullScreenBackgroundMode,
+    }))
+  );
 
   return (
     <PageLayout title="系统设置" onBack={onBack}>
       <div className="flex-1 p-4 pb-28 overflow-y-auto">
         <SettingsSection title="常用设置">
-          <SettingItem
-            icon={Wand2}
-            title="智能音源"
-            subtitle="🧙‍♀️自动切换到可用的免费音源"
-            action={
-              <Switch
-                checked={enableAutoMatch}
-                onCheckedChange={setEnableAutoMatch}
-              />
-            }
-          />
           <AggregatedSourceSelect />
           <SettingItem
             icon={Volume2}
@@ -102,9 +121,9 @@ export function SettingsPage({ onBack }: SettingsPageProps) {
             }
           />
           <QualitySelect />
-          <StreamCacheSetting />
           <SleepTimerSetting />
           <PlaybackSpeedSetting />
+          <DownloadSetting />
         </SettingsSection>
 
         <SettingsSection title="界面设置">
@@ -147,15 +166,16 @@ export function SettingsPage({ onBack }: SettingsPageProps) {
           />
         </SettingsSection>
 
-        <SettingsSection title="下载设置">
-          <DownloadQualitySelect />
-          <DownloadSettingToggles />
-          <DownloadDirectorySelect />
-        </SettingsSection>
-
         <SettingsSection title="账号数据">
           <NeteaseLogin />
           <SyncConfig />
+          <SettingItem
+            icon={Database}
+            title="数据备份"
+            subtitle="导出或导入全部收藏、歌单与设置"
+            onClick={() => setDataBackupOpen(true)}
+            showChevron
+          />
           <SettingItem
             icon={Trash2}
             title="回收站"
@@ -165,8 +185,37 @@ export function SettingsPage({ onBack }: SettingsPageProps) {
           />
         </SettingsSection>
 
+        <SettingsSection title="B站设置">
+          <SettingItem
+            icon={Wand2}
+            title="换源保留原信息"
+            subtitle="自动换源到B站时保留原标题和歌手"
+            action={
+              <Switch
+                checked={bilibiliKeepOriginalMeta}
+                onCheckedChange={setBilibiliKeepOriginalMeta}
+                disabled={!enableAutoMatch}
+              />
+            }
+          />
+          <AutoMatchSuffixSetting />
+        </SettingsSection>
+
         <SettingsSection title="高级设置">
           <ApiUrlConfig />
+          <SettingItem
+            icon={Shield}
+            title="代理回退"
+            subtitle="自动切换代理线路（但容易卡顿）"
+            action={
+              <Switch
+                checked={enableProxyFallback}
+                onCheckedChange={setEnableProxyFallback}
+              />
+            }
+          />
+          <AutoMatchSetting />
+          <StreamCacheSetting />
         </SettingsSection>
 
         <SettingsSection title="关于系统">
@@ -174,6 +223,7 @@ export function SettingsPage({ onBack }: SettingsPageProps) {
           <IssueLogs />
         </SettingsSection>
       </div>
+      <DataBackup open={dataBackupOpen} onOpenChange={setDataBackupOpen} />
     </PageLayout>
   );
 }

@@ -97,8 +97,11 @@ export default defineConfig({
   plugins: [
     react(),
     VitePWA({
-      registerType: "prompt",
+      registerType: "autoUpdate",
       injectRegister: "auto",
+      strategies: "injectManifest",
+      srcDir: "src",
+      filename: "sw.ts",
       includeAssets: ["favicon.svg"],
       manifest: {
         name: "Otter Music",
@@ -118,34 +121,12 @@ export default defineConfig({
           },
         ],
       },
-      workbox: {
-        cleanupOutdatedCaches: true,
-        globPatterns: ["**/*.{js,css,html,ico,png,svg,webp}"],
-        runtimeCaching: [
-          {
-            urlPattern: ({ request }) => {
-              const secFetchDest = request.headers.get("Sec-Fetch-Dest");
-              if (secFetchDest === "empty") return false;
-              if (!secFetchDest && request.destination === "") return false;
-              return (
-                request.destination === "audio" ||
-                /\.(mp3|m4a|ogg|wav|flac|aac|mpe?g)(\?|$)/i.test(request.url)
-              );
-            },
-            handler: "NetworkFirst",
-            options: {
-              cacheName: "audio-stream-cache",
-              expiration: {
-                maxEntries: 200,
-                maxAgeSeconds: 7 * 24 * 60 * 60,
-              },
-              cacheableResponse: {
-                statuses: [0, 200, 206],
-              },
-              rangeRequests: true,
-            },
-          },
-        ],
+      devOptions: {
+        enabled: true,
+        type: "module",
+      },
+      injectManifest: {
+        globPatterns: ["**/*.{js,css,ico,png,svg,webp}"],
       },
     }),
     {
@@ -263,6 +244,38 @@ export default defineConfig({
         };
       },
     }),
+    {
+      name: "plugin-fetch-proxy",
+      configureServer(server) {
+        server.middlewares.use(
+          "/api/fetch",
+          async (req: IncomingMessage, res: ServerResponse) => {
+            const url = new URL(
+              req.url || "",
+              "http://localhost"
+            ).searchParams.get("url");
+            if (!url) {
+              res.writeHead(400, { "Content-Type": "text/plain" });
+              res.end("missing url parameter");
+              return;
+            }
+            try {
+              const fetchRes = await fetch(url);
+              const text = await fetchRes.text();
+              res.writeHead(fetchRes.status, {
+                "Content-Type":
+                  fetchRes.headers.get("content-type") || "text/plain",
+                "Access-Control-Allow-Origin": "*",
+              });
+              res.end(text);
+            } catch {
+              res.writeHead(502, { "Content-Type": "text/plain" });
+              res.end("fetch failed");
+            }
+          }
+        );
+      },
+    },
   ],
   resolve: {
     alias: {
@@ -287,9 +300,12 @@ export default defineConfig({
         assetFileNames: "assets/[name]-[hash].[ext]",
         manualChunks: (id) => {
           if (id.includes("node_modules")) {
-            if (id.includes("react") || id.includes("react-dom")) {
+            if (id.includes("react") || id.includes("react-dom"))
               return "react-vendor";
-            }
+            if (id.includes("lucide-react")) return "lucide-vendor";
+            if (id.includes("@radix-ui")) return "radix-vendor";
+            if (id.includes("date-fns")) return "date-fns-vendor";
+            if (id.includes("@capacitor")) return "capacitor-vendor";
           }
         },
       },
@@ -301,6 +317,7 @@ export default defineConfig({
     setupFiles: "./src/test/setup.ts",
   },
   server: {
+    // ! 应优先使用正则表达式避免因为前缀匹配和顺序而匹配错误
     proxy: {
       "/api/netease": {
         target: "https://music.163.com",
@@ -333,10 +350,60 @@ export default defineConfig({
           });
         },
       },
-      "/api/qqmusic": {
+      "^/api/qqmusic-search": {
+        target: "https://u.y.qq.com",
+        changeOrigin: true,
+        rewrite: (path: string) => path.replace(/^\/api\/qqmusic-search/, ""),
+        configure: (proxy) => {
+          proxy.on("proxyReq", (proxyReq) => {
+            proxyReq.setHeader("Referer", "https://y.qq.com/");
+            proxyReq.setHeader("Origin", "https://y.qq.com");
+            proxyReq.setHeader("Cookie", "uin=");
+            proxyReq.setHeader(
+              "User-Agent",
+              "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+            );
+          });
+        },
+      },
+      "^/api/qqmusic-lyric": {
+        target: "https://c.y.qq.com",
+        changeOrigin: true,
+        rewrite: (path: string) => path.replace(/^\/api\/qqmusic-lyric/, ""),
+        configure: (proxy) => {
+          proxy.on("proxyReq", (proxyReq) => {
+            proxyReq.setHeader("Referer", "https://y.qq.com/");
+            proxyReq.setHeader("Cookie", "uin=");
+            proxyReq.setHeader(
+              "User-Agent",
+              "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+            );
+          });
+        },
+      },
+      "^/api/qqmusic(/|$)": {
         target: "https://i.y.qq.com",
         changeOrigin: true,
         rewrite: (path: string) => path.replace(/^\/api\/qqmusic/, ""),
+        headers: {
+          Referer: "https://y.qq.com/",
+          Origin: "https://y.qq.com",
+        },
+        configure: (proxy) => {
+          proxy.on("proxyReq", (proxyReq) => {
+            proxyReq.setHeader("Referer", "https://y.qq.com/");
+            proxyReq.setHeader("Origin", "https://y.qq.com");
+            proxyReq.setHeader(
+              "User-Agent",
+              "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+            );
+          });
+        },
+      },
+      "^/api/qqmusic-url": {
+        target: "https://u.y.qq.com",
+        changeOrigin: true,
+        rewrite: (path: string) => path.replace(/^\/api\/qqmusic-url/, ""),
         headers: {
           Referer: "https://y.qq.com/",
           Origin: "https://y.qq.com",
@@ -458,6 +525,11 @@ export default defineConfig({
             );
           });
         },
+      },
+      "/api/lx": {
+        target: "https://lxmusicapi.onrender.com",
+        changeOrigin: true,
+        rewrite: (path: string) => path.replace(/^\/api\/lx/, ""),
       },
     },
   },

@@ -284,11 +284,15 @@ export function LyricsPanel({ track, active = true }: LyricsPanelProps) {
       behavior: "smooth",
     });
 
-    const timer = setTimeout(() => {
+    const onScrollEnd = () => {
       isAutoScrollingRef.current = false;
-    }, 300);
-
-    return () => clearTimeout(timer);
+      container.removeEventListener("scrollend", onScrollEnd);
+    };
+    container.addEventListener("scrollend", onScrollEnd, { once: true });
+    return () => {
+      isAutoScrollingRef.current = false;
+      container.removeEventListener("scrollend", onScrollEnd);
+    };
   }, [activeIndex, isUserScrolling]);
 
   // 监听 seek 操作，重置用户滚动状态，使歌词立即跳转到对应位置
@@ -320,7 +324,6 @@ export function LyricsPanel({ track, active = true }: LyricsPanelProps) {
     );
   }
 
-  // TODO: 为什么 B 站音源应该返回的是 null 还显示加载中？
   if (loading) {
     return (
       <div className="h-full flex items-center justify-center text-sm text-white/40 tracking-widest">
@@ -399,7 +402,9 @@ export function LyricsPanel({ track, active = true }: LyricsPanelProps) {
             }}
             className="pointer-events-auto w-8 h-8 flex bg-white/10 hover:bg-white/20 backdrop-blur-sm rounded-full items-center justify-center transition-all active:scale-95 shadow-sm"
           >
-            <Play className="w-3.5 h-3.5 text-white fill-white ml-0.5" />
+            <div className="w-3.5 h-3.5 shrink-0 flex-[0_0_14px] min-w-3.5 min-h-3.5 ml-0.5">
+              <Play size={14} className="h-full w-full text-white fill-white" />
+            </div>
           </button>
         </div>
       )}

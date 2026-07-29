@@ -16,13 +16,13 @@ import { base64ToBlob } from "@/lib/utils/base64";
 import { LocalMusicFile } from "@/plugins/local-music";
 import { useDownloadStore } from "@/store/download-store";
 import { useMusicStore } from "@/store/music-store";
-import { useOfflineStore } from "@/store/offline-store";
+
 import { toastUtils } from "./toast";
 import { getProxyUrl, isProxyUrl } from "@/lib/api/config";
 import { logger } from "@/lib/logger";
 import { processBatchIO } from "@/lib/utils";
 import { embedMetadata } from "./id3-embed";
-import { getCachedBilibiliAudioFormat } from "@/lib/music-provider/providers/bilibili-api-provider";
+import { getCachedBilibiliAudioFormat } from "@/lib/bilibili/bilibili-cache";
 
 /**
  * 获取当前正在播放的曲目 URL（如果匹配）
@@ -248,6 +248,13 @@ async function downloadNative(
     path: filePath,
   });
 
+  logger.info("download", "downloadNative: resolved file path", {
+    musicPath,
+    fileName,
+    filePath,
+    fileUri: fileUri.uri,
+  });
+
   const listener = await FileTransfer.addListener(
     "progress",
     ({ bytes, contentLength }) => {
@@ -269,12 +276,8 @@ async function downloadNative(
     }
 
     const key = buildDownloadKey(track.source, track.id);
-    await useDownloadStore.getState().addRecord(key, fileUri.uri);
-
-    useOfflineStore.getState().addRecord({
-      trackId: track.id,
-      source: "download",
-      url: fileUri.uri,
+    await useDownloadStore.getState().addRecord(key, {
+      uri: fileUri.uri,
       cachedAt: Date.now(),
       name: track.name,
       artist: track.artist,
@@ -286,6 +289,17 @@ async function downloadNative(
     });
 
     if (toastId) toast.success("下载完成", { id: toastId });
+  } catch (err) {
+    logger.error("download", "downloadNative: FileTransfer failed", {
+      url,
+      filePath,
+      fileUri: fileUri.uri,
+      errorCode: (err as any)?.code,
+      errorMessage: (err as any)?.message,
+      source: (err as any)?.data?.source,
+      target: (err as any)?.data?.target,
+    });
+    throw err;
   } finally {
     await listener.remove();
   }
@@ -434,12 +448,24 @@ async function ensureDir(path: string) {
       directory: STORAGE_CONFIG.BASE_DIR,
       path,
     });
-  } catch {
-    await Filesystem.mkdir({
-      directory: STORAGE_CONFIG.BASE_DIR,
+  } catch (statErr) {
+    logger.warn("download", "ensureDir: stat failed, trying mkdir", {
       path,
-      recursive: true,
+      error: statErr instanceof Error ? statErr.message : String(statErr),
     });
+    try {
+      await Filesystem.mkdir({
+        directory: STORAGE_CONFIG.BASE_DIR,
+        path,
+        recursive: true,
+      });
+    } catch (mkdirErr) {
+      logger.error("download", "ensureDir: mkdir failed", {
+        path,
+        error: mkdirErr instanceof Error ? mkdirErr.message : String(mkdirErr),
+      });
+      throw mkdirErr;
+    }
   }
 }
 
@@ -466,7 +492,7 @@ export function triggerBlobDownload(
 
 /* ================= 下载记录持久化 ================= */
 export async function saveDownloadRecordsToDisk(
-  records: Record<string, string>
+  records: Record<string, unknown>
 ) {
   if (!Capacitor.isNativePlatform()) return;
 
@@ -487,7 +513,7 @@ export async function saveDownloadRecordsToDisk(
 
 export async function loadDownloadRecordsFromDisk(): Promise<Record<
   string,
-  string
+  unknown
 > | null> {
   if (!Capacitor.isNativePlatform()) return null;
 

@@ -1,4 +1,5 @@
 import { useMusicStore } from "@/store/music-store";
+import { useShallow } from "zustand/react/shallow";
 import {
   Select,
   SelectContent,
@@ -8,9 +9,15 @@ import {
 } from "@/components/ui/select";
 import { Music } from "lucide-react";
 import { SettingItem } from "./SettingItem";
+import { QUALITY_OPTIONS } from "@/lib/utils/quality";
 
 export function QualitySelect() {
-  const { quality, setQuality } = useMusicStore();
+  const { quality, setQuality } = useMusicStore(
+    useShallow((state) => ({
+      quality: state.quality,
+      setQuality: state.setQuality,
+    }))
+  );
 
   return (
     <SettingItem
@@ -22,10 +29,11 @@ export function QualitySelect() {
             <SelectValue placeholder="音质" />
           </SelectTrigger>
           <SelectContent>
-            <SelectItem value="128">标准 (128kbps)</SelectItem>
-            <SelectItem value="192">高品 (192kbps)</SelectItem>
-            <SelectItem value="320">极高 (320kbps)</SelectItem>
-            <SelectItem value="999">无损 (999kbps)</SelectItem>
+            {QUALITY_OPTIONS.map(({ value, label }) => (
+              <SelectItem key={value} value={value}>
+                {label}
+              </SelectItem>
+            ))}
           </SelectContent>
         </Select>
       }
