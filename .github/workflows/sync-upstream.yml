@@ -1,0 +1,45 @@
+name: Sync Upstream Fork
+# 触发规则：定时每日凌晨3点执行 + 手动点击运行
+on:
+  schedule:
+    - cron: '0 3 * * *'
+  workflow_dispatch:
+
+# 授予推送代码写入权限
+permissions:
+  contents: write
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      - name: 配置Git全局基础设置
+        run: |
+          git config --global user.name "GitHub Action Sync"
+          git config --global user.email "action-sync@github.com"
+          git config --global http.version HTTP/1.1
+          # 超时延长，缓解国内网络拉取超时
+          git config --global http.timeout 1200
+
+      - name: 拉取当前你的Fork仓库代码
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # 拉取完整提交历史，保证合并正常
+
+      - name: 绑定上游原仓库并同步代码
+        env:
+          # ========== 这里必须修改成你的上游原版仓库地址 ==========
+          UPSTREAM_REPO: DJChanahCJD/otter-music
+          # 同步的主分支名称，大部分仓库是main/master，按需修改
+          TARGET_BRANCH: main
+        run: |
+          # 添加上游远程仓库
+          git remote add upstream https://github.com/${UPSTREAM_REPO}.git
+          # 拉取上游全部分支，增加重试逻辑
+          git fetch --all --tags --force
+          # 切换本地目标分支
+          git checkout ${TARGET_BRANCH}
+          # 合并上游最新代码
+          git merge --no-stat upstream/${TARGET_BRANCH} -m "auto sync upstream source"
+          # 推送合并后的代码到你自己fork仓库
+          git push origin ${TARGET_BRANCH} --force-with-lease
