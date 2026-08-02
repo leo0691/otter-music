@@ -25,7 +25,7 @@ export function joinPath(parent: string | undefined, name: string): string {
   return p ? `${p}/${name}` : `/${name}`;
 }
 
-/** 规范化服务器地址：去尾斜杠 */
+/** 规范化站点地址：去尾斜杠 */
 const normalizeServerUrl = (url: string) => url.replace(/\/+$/, "");
 
 /** Alist 统一响应格式 */
@@ -48,7 +48,7 @@ interface AlistGetData {
 
 /**
  * 统一 Alist POST 请求
- * @param server 服务器配置
+ * @param server 站点配置
  * @param endpoint 接口路径，如 /api/fs/list
  * @param body 请求体
  */
@@ -86,7 +86,7 @@ async function alistPost<T>(
 
 /**
  * 获取目录列表
- * @param server 服务器配置
+ * @param server 站点配置
  * @param path 目录路径
  * @param page 页码，默认 1
  * @param per_page 每页数量，0 表示全部
@@ -123,22 +123,24 @@ export async function listDir(
 
 /**
  * 搜索文件
- * @param server 服务器配置
+ * @param server 站点配置
  * @param keywords 关键词
  * @param scope 0=全部 1=文件夹 2=文件
  * @param page 页码
  * @param per_page 每页数量
+ * @param parent 搜索根目录，默认 "/" 即整站递归
  */
 export async function searchFiles(
   server: AlistServer,
   keywords: string,
   scope: 0 | 1 | 2 = 2,
   page: number = 1,
-  per_page: number = 20
+  per_page: number = 20,
+  parent: string = "/"
 ): Promise<AlistFsItem[]> {
   try {
     const data = await alistPost<AlistListData>(server, "/api/fs/search", {
-      parent: "/",
+      parent,
       keywords,
       scope,
       page,
@@ -156,9 +158,30 @@ export async function searchFiles(
   }
 }
 
+/** Alist track.id 前缀 */
+const ALIST_ID_PREFIX = "alist:";
+
+/**
+ * 解析 Alist track.id 为 { serverId, filePath }
+ * id 格式：alist:<serverId>:<fullPath>
+ * 解析失败返回 null。
+ */
+export function parseAlistTrackId(
+  id: string
+): { serverId: string; filePath: string } | null {
+  if (!id.startsWith(ALIST_ID_PREFIX)) return null;
+  const rest = id.slice(ALIST_ID_PREFIX.length);
+  const colonIdx = rest.indexOf(":");
+  if (colonIdx === -1) return null;
+  return {
+    serverId: rest.slice(0, colonIdx),
+    filePath: rest.slice(colonIdx + 1),
+  };
+}
+
 /**
  * 获取文件直链（raw_url）用于播放
- * @param server 服务器配置
+ * @param server 站点配置
  * @param filePath 文件完整路径
  */
 export async function getRawUrl(

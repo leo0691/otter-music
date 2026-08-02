@@ -23,8 +23,10 @@ import {
   Tag,
   Database,
   Shield,
+  Bell,
 } from "lucide-react";
 import { Switch } from "./ui/switch";
+import { useAppStore } from "@/store/app-store";
 import {
   Select,
   SelectContent,
@@ -68,6 +70,7 @@ function SettingsSection({
 export function SettingsPage({ onBack }: SettingsPageProps) {
   const navigate = useNavigate();
   const [dataBackupOpen, setDataBackupOpen] = useState(false);
+  const { enableUpdateNotify, setEnableUpdateNotify } = useAppStore();
   const {
     volume,
     setVolume,
@@ -98,7 +101,7 @@ export function SettingsPage({ onBack }: SettingsPageProps) {
 
   return (
     <PageLayout title="系统设置" onBack={onBack}>
-      <div className="flex-1 p-4 pb-28 overflow-y-auto">
+      <div className="flex-1 p-4 pb-bottom-stack overflow-y-auto">
         <SettingsSection title="常用设置">
           <AggregatedSourceSelect />
           <SettingItem
@@ -219,6 +222,17 @@ export function SettingsPage({ onBack }: SettingsPageProps) {
         </SettingsSection>
 
         <SettingsSection title="关于系统">
+          <SettingItem
+            icon={Bell}
+            title="更新提醒"
+            subtitle="启动时自动检查新版本"
+            action={
+              <Switch
+                checked={enableUpdateNotify}
+                onCheckedChange={setEnableUpdateNotify}
+              />
+            }
+          />
           <UpdateCheck />
           <IssueLogs />
         </SettingsSection>
