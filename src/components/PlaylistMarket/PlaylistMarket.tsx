@@ -34,6 +34,7 @@ import { PlaylistGrid } from "./PlaylistGrid";
 import { PodcastSection } from "./PodcastSection";
 import { AlistSection } from "./AlistSection";
 import { BillboardSection } from "./BillboardSection";
+import { AwardsSection } from "./AwardsSection";
 import { useAlistStore } from "@/store/alist-store";
 import { logger } from "@/lib/logger";
 
@@ -242,7 +243,7 @@ export function PlaylistMarket() {
     saveSearchCache(null);
   }, [saveSearchCache]);
 
-  // Billboard 子 tab 各自记忆滚动位置，故 scroll key 附加 billboardGroup
+  // Billboard 子 tab 记忆滚动位置，故 scroll key 附加子 tab 标识
   const { scrollRef } = useScrollSave(
     `scroll-${snapshotKey}${activeCategory === "Billboard" ? `:${billboardGroup}` : ""}`,
     !searchQuery &&
@@ -397,36 +398,42 @@ export function PlaylistMarket() {
               </div>
             )}
 
-            {active.loading ? (
-              <div className="h-60 flex flex-col items-center justify-center gap-3 text-muted-foreground">
-                <Loader2 className="h-6 w-6 animate-spin text-primary" />
-                <span className="text-xs tracking-widest uppercase opacity-50">
-                  加载中...
-                </span>
-              </div>
+            {activeCategory === "featured" && featuredTab === "Awards" ? (
+              <AwardsSection />
             ) : (
-              <PlaylistGrid
-                list={active.items}
-                onClick={(id) => navigate(`/netease-playlist/${id}`)}
-              />
-            )}
+              <>
+                {active.loading ? (
+                  <div className="h-60 flex flex-col items-center justify-center gap-3 text-muted-foreground">
+                    <Loader2 className="h-6 w-6 animate-spin text-primary" />
+                    <span className="text-xs tracking-widest uppercase opacity-50">
+                      加载中...
+                    </span>
+                  </div>
+                ) : (
+                  <PlaylistGrid
+                    list={active.items}
+                    onClick={(id) => navigate(`/netease-playlist/${id}`)}
+                  />
+                )}
 
-            <div
-              ref={active.observerTargetRef}
-              className="h-12 w-full mt-6 flex items-center justify-center opacity-80"
-            >
-              {active.fetching && !active.loading && (
-                <div className="flex items-center gap-2 text-xs text-muted-foreground">
-                  <Loader2 className="h-4 w-4 animate-spin" />
-                  <span>加载中...</span>
+                <div
+                  ref={active.observerTargetRef}
+                  className="h-12 w-full mt-6 flex items-center justify-center opacity-80"
+                >
+                  {active.fetching && !active.loading && (
+                    <div className="flex items-center gap-2 text-xs text-muted-foreground">
+                      <Loader2 className="h-4 w-4 animate-spin" />
+                      <span>加载中...</span>
+                    </div>
+                  )}
+                  {!active.hasMore && active.items.length > 0 && (
+                    <span className="text-xs text-muted-foreground/50 tracking-wide uppercase">
+                      没有更多了-_-
+                    </span>
+                  )}
                 </div>
-              )}
-              {!active.hasMore && active.items.length > 0 && (
-                <span className="text-xs text-muted-foreground/50 tracking-wide uppercase">
-                  没有更多了-_-
-                </span>
-              )}
-            </div>
+              </>
+            )}
           </div>
         )}
       </main>
